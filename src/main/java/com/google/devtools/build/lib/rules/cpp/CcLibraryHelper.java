@@ -30,6 +30,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Streams;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.Root;
 import com.google.devtools.build.lib.analysis.AnalysisUtils;
 import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.LanguageDependentFragment;
@@ -1385,6 +1386,72 @@ public final class CcLibraryHelper {
       for (PathFragment looseIncludeDir : looseIncludeDirs) {
         contextBuilder.addDeclaredIncludeDir(looseIncludeDir);
       }
+    }
+
+    if (ruleContext.getFragment(CppConfiguration.class).experimentalEnableImplicitHeaderMaps()) {
+      ImmutableList.Builder<Artifact> headerMapsBuilder = ImmutableList.builder();
+      String targetName = ruleContext.getTarget().getName();
+
+      HeaderMapInfo.Builder internalHeaderMapInfo = new HeaderMapInfo.Builder();
+      internalHeaderMapInfo.addHeaders(publicHeaders.getHeaders());
+      internalHeaderMapInfo.addHeaders(privateHeaders);
+      internalHeaderMapInfo.addHeaders(publicTextualHeaders);
+      Artifact internalHeaderMap = ruleContext.getPackageRelativeArtifact(PathFragment.create(targetName + "_internal.hmap"),
+                ruleContext
+                .getConfiguration()
+                .getGenfilesDirectory(ruleContext.getRule().getRepository()));
+      ruleContext.registerAction(
+        new HeaderMapAction(ruleContext.getActionOwner(),
+            internalHeaderMapInfo.build().getSources(),
+            internalHeaderMap));
+      contextBuilder.addQuoteIncludeDir(internalHeaderMap.getExecPath());
+      headerMapsBuilder.add(internalHeaderMap);
+
+      String namespace;
+      if (ruleContext.attributes().has("header_namespace")) {
+         namespace = ruleContext.attributes().get("header_namespace", Type.STRING);
+      } else {
+         namespace = ruleContext.getRule().getName();
+      }
+
+      // Construct the dep headermap.
+      // This header map additionally contains namespaced headers so that a user
+      // can import headers of the form Namespace/Header.h from headers within
+      // the current target.
+      HeaderMapInfo.Builder depHeaderMapInfo = new HeaderMapInfo.Builder();
+      depHeaderMapInfo.setNamespace(namespace);
+      depHeaderMapInfo.addNamespacedHeaders(publicHeaders.getHeaders());
+      depHeaderMapInfo.addHeaders(publicHeaders.getHeaders());
+      depHeaderMapInfo.addNamespacedHeaders(privateHeaders);
+      depHeaderMapInfo.addHeaders(privateHeaders);
+      depHeaderMapInfo.addNamespacedHeaders(publicTextualHeaders);
+      depHeaderMapInfo.addHeaders(publicTextualHeaders);
+
+      // Merge all of the header map info from deps. The headers within a given
+      // target have precedence over over dep headers ( See
+      // HeaderMapInfo.build() ).
+      if (ruleContext.attributes().has("deps")){
+        for (HeaderMapInfoProvider hmapProvider : ruleContext.getPrerequisites("deps", Mode.TARGET, HeaderMapInfoProvider.class)) {
+          depHeaderMapInfo.mergeHeaderMapInfo(hmapProvider.getInfo());
+        }
+      }
+      Artifact depHeaderMap = ruleContext.getPackageRelativeArtifact(PathFragment.create(targetName + ".hmap"),
+                ruleContext
+                .getConfiguration()
+                .getGenfilesDirectory(ruleContext.getRule().getRepository()));
+      ruleContext.registerAction(
+        new HeaderMapAction(ruleContext.getActionOwner(),
+            depHeaderMapInfo.build().getSources(),
+            depHeaderMap));
+      contextBuilder.addIncludeDir(depHeaderMap.getExecPath());
+      headerMapsBuilder.add(depHeaderMap);
+
+      // If we have headermaps, then we need to add an include of
+      // the working directory ( i.e. exec root ) in this form
+      // and it must be after including the header map files
+      contextBuilder.addIncludeDir(PathFragment.create("."));
+	    ImmutableList headerMaps = headerMapsBuilder.build();
+      contextBuilder.setHeaderMaps(headerMaps);
     }
 
     if (featureConfiguration.isEnabled(CppRuleClasses.MODULE_MAPS)) {

@@ -982,6 +982,13 @@ public class CppConfiguration extends BuildConfiguration.Fragment {
   }
 
   /**
+   * Returns whether we are implicitly creating header maps.
+   */
+  public boolean experimentalEnableImplicitHeaderMaps() {
+    return cppOptions.experimentalEnableImplicitHeaderMaps;
+  }
+
+  /**
    * Returns true if Fission is specified for this build and supported by the crosstool.
    *
    * <p>Deprecated: Use {@link CppHelper#useFission(CppConfiguration, CcToolchainProvider)}

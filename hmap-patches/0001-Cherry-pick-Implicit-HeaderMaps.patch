@@ -1,0 +1,1170 @@
+From ea326949cc01a74dcd878b2382697e74cb0bad28 Mon Sep 17 00:00:00 2001
+From: Jerry Marino <i@jerrymarino.com>
+Date: Fri, 8 Sep 2017 18:42:35 -0700
+Subject: [PATCH] [Cherry-pick] Implicit HeaderMaps
+
+Request for feedback on an implementation of C++ HeaderMaps in Bazel.
+
+A HeaderMap is a data structure that allows the compiler to lookup included
+headers in constant time.
+
+Traditionally, the compiler has to parse a large string of `iquote` includes,
+and then search these directories for a given header. This is slow for many
+reasons.
+
+The protocol of HeaderMap is implemented within compilers. Please find the
+Lexer implementation in Clang.
+https://clang.llvm.org/doxygen/HeaderMapTypes_8h.html
+https://clang.llvm.org/doxygen/HeaderMap_8cpp_source.html
+
+Use case:
+
+I'm seeing a massive increase in build performance by using this. It cut my
+clean build time in half.
+
+Performance data:
+
+Build time before HeaderMap:
+Target //Pinterest/iOS/App:PinterestDevelopment up-to-date:
+bazel-bin/Pinterest/iOS/App/PinterestDevelopment.ipa
+____Elapsed time: 373.588s, Critical Path: 18.86s
+
+Build time after header maps on the entire project:
+Target //Pinterest/iOS/App:PinterestDevelopment up-to-date:
+bazel-bin/Pinterest/iOS/App/PinterestDevelopment.ipa
+____Elapsed time: 188.971s, Critical Path: 17.11s
+
+Additionally, this solves the problem of having namespaced headers which is used
+in CocoaPods all over. Using a namespace makes includes more clear since it is
+easier for the user to distinguish where the header was derived.
+
+Implementation:
+
+At the ObjC level, headermaps are created with a namespace of the given target.
+In `objc_library` it is possible for the user to override the value of the
+namespace via the new attribute, `header_namespace`.
+
+By using 2 headermaps the headersearchs are most efficient: a headermap for the
+current target, and a header map with namespaced includes.
+
+Users can include headers from ObjC targets in the convention of
+`Namespace/Header.h`. Projects that don't use namespacing should see benefits as
+well: includes of the form `Header.h` will be read from the headermap.
+
+`HeaderMapInfo` contains all of the transitive info for dependent header maps,
+and is merged together into a single map. This yields much better performance
+than multiple headermaps.
+
+This is my first PR to the Bazel repo, so any suggestions or feedback is greatly
+appreciated!
+---
+ .../build/lib/rules/cpp/CcLibraryHelper.java       |  67 +++++
+ .../build/lib/rules/cpp/ClangHeaderMap.java        | 325 +++++++++++++++++++++
+ .../build/lib/rules/cpp/CppCompilationContext.java |  33 ++-
+ .../build/lib/rules/cpp/CppConfiguration.java      |   7 +
+ .../devtools/build/lib/rules/cpp/CppOptions.java   |  12 +
+ .../build/lib/rules/cpp/HeaderMapAction.java       |  85 ++++++
+ .../build/lib/rules/cpp/HeaderMapInfo.java         |  86 ++++++
+ .../build/lib/rules/cpp/HeaderMapInfoProvider.java |  33 +++
+ .../devtools/build/lib/rules/objc/ObjcCommon.java  |  59 +++-
+ .../devtools/build/lib/rules/objc/ObjcLibrary.java |   2 +
+ .../build/lib/rules/objc/ObjcRuleClasses.java      |   6 +
+ .../build/lib/rules/cpp/ClangHeaderMapTest.java    |  41 +++
+ .../build/lib/rules/objc/ObjcLibraryTest.java      |  35 +++
+ 13 files changed, 781 insertions(+), 10 deletions(-)
+ create mode 100644 src/main/java/com/google/devtools/build/lib/rules/cpp/ClangHeaderMap.java
+ create mode 100644 src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapAction.java
+ create mode 100644 src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapInfo.java
+ create mode 100644 src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapInfoProvider.java
+ create mode 100644 src/test/java/com/google/devtools/build/lib/rules/cpp/ClangHeaderMapTest.java
+
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/cpp/CcLibraryHelper.java b/src/main/java/com/google/devtools/build/lib/rules/cpp/CcLibraryHelper.java
+index e940d5782..207524751 100644
+--- a/src/main/java/com/google/devtools/build/lib/rules/cpp/CcLibraryHelper.java
++++ b/src/main/java/com/google/devtools/build/lib/rules/cpp/CcLibraryHelper.java
+@@ -28,6 +28,7 @@ import com.google.common.collect.Iterables;
+ import com.google.common.collect.Sets;
+ import com.google.common.collect.Streams;
+ import com.google.devtools.build.lib.actions.Artifact;
++import com.google.devtools.build.lib.actions.Root;
+ import com.google.devtools.build.lib.analysis.AnalysisUtils;
+ import com.google.devtools.build.lib.analysis.FileProvider;
+ import com.google.devtools.build.lib.analysis.LanguageDependentFragment;
+@@ -1373,6 +1374,72 @@ public final class CcLibraryHelper {
+       }
+     }
+ 
++    if (ruleContext.getFragment(CppConfiguration.class).experimentalEnableImplicitHeaderMaps()) {
++      ImmutableList.Builder<Artifact> headerMapsBuilder = ImmutableList.builder();
++      String targetName = ruleContext.getTarget().getName();
++
++      HeaderMapInfo.Builder internalHeaderMapInfo = new HeaderMapInfo.Builder();
++      internalHeaderMapInfo.addHeaders(publicHeaders.getHeaders());
++      internalHeaderMapInfo.addHeaders(privateHeaders);
++      internalHeaderMapInfo.addHeaders(publicTextualHeaders);
++      Artifact internalHeaderMap = ruleContext.getPackageRelativeArtifact(PathFragment.create(targetName + "_internal.hmap"),
++                ruleContext
++                .getConfiguration()
++                .getGenfilesDirectory(ruleContext.getRule().getRepository()));
++      ruleContext.registerAction(
++        new HeaderMapAction(ruleContext.getActionOwner(),
++            internalHeaderMapInfo.build().getSources(),
++            internalHeaderMap));
++      contextBuilder.addQuoteIncludeDir(internalHeaderMap.getExecPath());
++      headerMapsBuilder.add(internalHeaderMap);
++
++      String namespace;
++      if (ruleContext.attributes().has("header_namespace")) {
++         namespace = ruleContext.attributes().get("header_namespace", Type.STRING);
++      } else {
++         namespace = ruleContext.getRule().getName();
++      }
++
++      // Construct the dep headermap.
++      // This header map additionally contains namespaced headers so that a user
++      // can import headers of the form Namespace/Header.h from headers within
++      // the current target.
++      HeaderMapInfo.Builder depHeaderMapInfo = new HeaderMapInfo.Builder();
++      depHeaderMapInfo.setNamespace(namespace);
++      depHeaderMapInfo.addNamespacedHeaders(publicHeaders.getHeaders());
++      depHeaderMapInfo.addHeaders(publicHeaders.getHeaders());
++      depHeaderMapInfo.addNamespacedHeaders(privateHeaders);
++      depHeaderMapInfo.addHeaders(privateHeaders);
++      depHeaderMapInfo.addNamespacedHeaders(publicTextualHeaders);
++      depHeaderMapInfo.addHeaders(publicTextualHeaders);
++
++      // Merge all of the header map info from deps. The headers within a given
++      // target have precedence over over dep headers ( See
++      // HeaderMapInfo.build() ).
++      if (ruleContext.attributes().has("deps")){
++        for (HeaderMapInfoProvider hmapProvider : ruleContext.getPrerequisites("deps", Mode.TARGET, HeaderMapInfoProvider.class)) {
++          depHeaderMapInfo.mergeHeaderMapInfo(hmapProvider.getInfo());
++        }
++      }
++      Artifact depHeaderMap = ruleContext.getPackageRelativeArtifact(PathFragment.create(targetName + ".hmap"),
++                ruleContext
++                .getConfiguration()
++                .getGenfilesDirectory(ruleContext.getRule().getRepository()));
++      ruleContext.registerAction(
++        new HeaderMapAction(ruleContext.getActionOwner(),
++            depHeaderMapInfo.build().getSources(),
++            depHeaderMap));
++      contextBuilder.addIncludeDir(depHeaderMap.getExecPath());
++      headerMapsBuilder.add(depHeaderMap);
++
++      // If we have headermaps, then we need to add an include of
++      // the working directory ( i.e. exec root ) in this form
++      // and it must be after including the header map files
++      contextBuilder.addIncludeDir(PathFragment.create("."));
++	    ImmutableList headerMaps = headerMapsBuilder.build();
++      contextBuilder.setHeaderMaps(headerMaps);
++    }
++
+     if (featureConfiguration.isEnabled(CppRuleClasses.MODULE_MAPS)) {
+       if (cppModuleMap == null) {
+         cppModuleMap = CppHelper.createDefaultCppModuleMap(ruleContext, /*suffix=*/ "");
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/cpp/ClangHeaderMap.java b/src/main/java/com/google/devtools/build/lib/rules/cpp/ClangHeaderMap.java
+new file mode 100644
+index 000000000..66510cb61
+--- /dev/null
++++ b/src/main/java/com/google/devtools/build/lib/rules/cpp/ClangHeaderMap.java
+@@ -0,0 +1,325 @@
++package com.google.devtools.build.lib.rules.cpp;
++
++import java.io.File;
++import java.io.FileOutputStream;
++
++import java.util.Map;
++import java.util.HashMap;
++import java.util.Set;
++import java.util.ArrayList;
++import java.util.List;
++import java.nio.ByteBuffer;
++import java.nio.CharBuffer;
++import java.nio.ByteOrder;
++import java.nio.charset.Charset;
++import java.nio.charset.StandardCharsets;
++import java.nio.channels.FileChannel;
++
++import java.nio.file.Path;
++import java.nio.file.Paths;
++
++import static java.lang.Math.max;
++
++public final class ClangHeaderMap {
++  // Logical representation of a bucket.
++  // The actual data is stored in the string pool.
++  private class HMapBucket {
++    String key;
++    String prefix;
++    String suffix;
++
++    HMapBucket(String key, String prefix, String suffix) {
++      this.key = key;
++      this.prefix = prefix;
++      this.suffix = suffix;
++    }
++  }
++
++  private static final int HEADER_MAGIC = ('h' << 24) | ('m' << 16) | ('a' << 8) | 'p';
++  private static final short HEADER_VERSION = 1;
++  private static final short HEADER_RESERVED = 0;
++  private static final int EMPTY_BUCKET_KEY = 0;
++
++  private static final int HEADER_SIZE = 24;
++  private static final int BUCKET_SIZE = 12;
++
++  private static final int INT_SIZE = Integer.SIZE/8;
++
++  // Data stored in accordance to Clang's lexer types
++  /**
++  enum {
++      HMAP_HeaderMagicNumber = ('h' << 24) | ('m' << 16) | ('a' << 8) | 'p',
++      HMAP_HeaderVersion = 1,
++      HMAP_EmptyBucketKey = 0
++    };
++
++    struct HMapBucket {
++      uint32_t Key;    // Offset (into strings) of key.
++      uint32_t Prefix; // Offset (into strings) of value prefix.
++      uint32_t Suffix; // Offset (into strings) of value suffix.
++    };
++
++    struct HMapHeader {
++      uint32_t Magic;      // Magic word, also indicates byte order.
++      uint16_t Version;      // Version number -- currently 1.
++      uint16_t Reserved;     // Reserved for future use - zero for now.
++      uint32_t StringsOffset;  // Offset to start of string pool.
++      uint32_t NumEntries;     // Number of entries in the string table.
++      uint32_t NumBuckets;     // Number of buckets (always a power of 2).
++      uint32_t MaxValueLength; // Length of longest result path (excluding nul).
++      // An array of 'NumBuckets' HMapBucket objects follows this header.
++      // Strings follow the buckets, at StringsOffset.
++    };
++  */
++  public ByteBuffer buff;
++
++  private int numBuckets;
++  private int numUsedBuckets;
++  private int stringsOffset;
++  private int stringsSize;
++  private int maxValueLength;
++  private int maxStringsSize;
++
++  // Used only for creation
++  private HMapBucket[] buckets;
++
++  // Create a headermap from a raw Map of keys to strings
++  // Usage:
++  // A given path to a header is keyed by that header.
++  // .e. Header.h -> Path/To/Header.h
++  //
++  // Additionally, it is possible to alias custom paths to headers.
++  // For example, it is possible to namespace a given target
++  // i.e. MyTarget/Header.h -> Path/To/Header.h
++  //
++  // The HeaderMap format is defined by the lexer of Clang
++  // https://clang.llvm.org/doxygen/HeaderMap_8cpp_source.html
++  ClangHeaderMap(Map<String, String> headerPathsByKeys) {
++    int dataOffset = 1;
++    setMap(headerPathsByKeys);
++
++    int endBuckets = HEADER_SIZE + numBuckets * BUCKET_SIZE;
++    stringsOffset = endBuckets - dataOffset;
++    int totalBufferSize = endBuckets + maxStringsSize;
++    buff = ByteBuffer.wrap(new byte[totalBufferSize]).order(ByteOrder.LITTLE_ENDIAN);
++
++    // Write out the header
++    buff.putInt(HEADER_MAGIC);
++    buff.putShort(HEADER_VERSION);
++    buff.putShort(HEADER_RESERVED);
++    buff.putInt(stringsOffset);
++
++    // For each entry, we write a key, suffix, and prefix
++    int stringPoolSize = headerPathsByKeys.size() * 3;
++    buff.putInt(stringPoolSize);
++    buff.putInt(numBuckets);
++    buff.putInt(maxValueLength);
++
++    // Write out buckets and compute string offsets
++    byte[] stringBytes = new byte[maxStringsSize];
++
++    // Used to compute the current offset
++    stringsSize = 0;
++    for (int i = 0; i < numBuckets; i++) {
++      HMapBucket bucket = buckets[i];
++      if (bucket == null) {
++        buff.putInt(EMPTY_BUCKET_KEY);
++        buff.putInt(0);
++        buff.putInt(0);
++      } else {
++        int keyOffset = stringsSize;
++        buff.putInt(keyOffset + dataOffset);
++        stringsSize = addString(bucket.key, stringsSize, stringBytes);
++
++        int prefixOffset = stringsSize;
++        stringsSize = addString(bucket.prefix, stringsSize, stringBytes);
++        buff.putInt(prefixOffset + dataOffset);
++
++        int suffixOffset = stringsSize;
++        stringsSize = addString(bucket.suffix, stringsSize, stringBytes);
++        buff.putInt(suffixOffset + dataOffset);
++      }
++    }
++    buff.put(stringBytes, 0, stringsSize);
++  }
++
++  // For testing purposes. Implement a similiar algorithm as the clang
++  // lexer.
++  public String get(String key) {
++    int bucketIdx = clangKeyHash(key) & (numBuckets - 1);
++    while (bucketIdx < numBuckets) {
++      // Buckets are right after the header
++      int bucketOffset = HEADER_SIZE + (BUCKET_SIZE * bucketIdx);
++      int keyOffset = buff.getInt(bucketOffset);
++
++      // Note: the lexer does a case insensitive compare here but
++      // it isn't necessary for test purposes
++      if (key.equals(getString(keyOffset)) == false) {
++        bucketIdx++;
++        continue;
++      }
++
++      // Start reading bytes from the prefix
++      int prefixOffset = buff.getInt(bucketOffset + INT_SIZE);
++      int suffixOffset = buff.getInt(bucketOffset + INT_SIZE * 2);
++      return getString(prefixOffset) + getString(suffixOffset);
++    }
++    return null;
++  }
++
++  // Return a string from an offset
++  // This method is used for testing only.
++  private String getString(int offset) {
++    int readOffset = stringsOffset + offset;
++    int endStringsOffset = stringsOffset + stringsSize;
++    int idx = readOffset;
++    byte[] stringBytes = new byte[2048];
++    while(idx < endStringsOffset) {
++      byte c = (byte)buff.getChar(idx);
++      if (c == 0) {
++        break;
++      }
++      stringBytes[idx] = c;
++      idx++;
++    }
++    try {
++      return new String(stringBytes).trim();
++    } catch(Exception e) {
++      return null;
++    }
++  }
++
++  private void addBucket(HMapBucket bucket, HMapBucket[] buckets, int numBuckets) {
++    // Use a load factor of 0.5
++    if (((numUsedBuckets + 1) / numBuckets) > 0.5 == false) {
++      int bucketIdx = clangKeyHash(bucket.key) & (numBuckets - 1);
++      // Base case, the bucket Idx is free
++      if (buckets[bucketIdx] == null) {
++        buckets[bucketIdx] = bucket;
++        this.numUsedBuckets++;
++        return;
++      }
++
++      // Handle collisions.
++      //
++      // The lexer does a linear scan of the hash table when keys do
++      // not match, starting at the bucket.
++      while(bucketIdx < numBuckets) {
++        bucketIdx = (bucketIdx + 1) & (numBuckets - 1);
++        if (buckets[bucketIdx] == null) {
++          buckets[bucketIdx] = bucket;
++          this.numUsedBuckets++;
++          return;
++        }
++      }
++    }
++
++    // If there are no more slots left, grow by a power of 2
++    int newNumBuckets = numBuckets * 2;
++    HMapBucket[] newBuckets = new HMapBucket[newNumBuckets];
++
++    HMapBucket[] oldBuckets = buckets;
++    this.buckets = newBuckets;
++    this.numBuckets = newNumBuckets;
++    this.numUsedBuckets = 0;
++    for(HMapBucket cpBucket: oldBuckets) {
++      if (cpBucket != null) {
++        addBucket(cpBucket, newBuckets, newNumBuckets);
++      }
++    }
++
++    // Start again
++    addBucket(bucket, newBuckets, newNumBuckets);
++  }
++
++  private void setMap(Map<String, String> headerPathsByKeys){
++    // Compute header metadata
++    maxValueLength = 1;
++    maxStringsSize = 0;
++    numUsedBuckets = 0;
++
++    // Per the format, buckets need to be powers of 2 in size
++    numBuckets = getNextPowerOf2(headerPathsByKeys.size() + 1);
++    buckets = new HMapBucket[numBuckets];
++
++    for(Map.Entry<String, String> entry: headerPathsByKeys.entrySet()){
++      String key = entry.getKey();
++      String path = entry.getValue();
++
++      // Get the prefix and suffix
++      String suffix;
++      String prefix;
++      Path pathValue = Paths.get(path);
++      if (pathValue.getNameCount() < 2) {
++        // The suffix is empty when the file path just a filename
++        prefix = "";
++        suffix = pathValue.getFileName().toString();
++      } else {
++        prefix = pathValue.getParent().toString() + "/";
++        suffix = pathValue.getFileName().toString();
++      }
++
++      HMapBucket bucket = new HMapBucket(key, prefix, suffix);
++      addBucket(bucket, buckets, numBuckets);
++      int prefixLen = prefix.getBytes().length + 1;
++      int suffixLen = suffix.getBytes().length + 1;
++      int keyLen = key.getBytes().length + 1;
++      maxStringsSize += prefixLen + suffixLen + keyLen;
++
++      maxValueLength = max(maxValueLength, keyLen);
++      maxValueLength = max(maxValueLength, suffixLen);
++      maxValueLength = max(maxValueLength, prefixLen);
++    }
++  }
++
++  // Utils
++
++  private static int addString(String str, int totalLength, byte[] stringBytes) {
++    for (byte b : str.getBytes(StandardCharsets.UTF_8)) {
++      stringBytes[totalLength] = b;
++      totalLength++;
++    }
++    stringBytes[totalLength] = (byte) 0;
++    totalLength++;
++    return totalLength;
++  }
++
++  private static int getNextPowerOf2(int a) {
++    int b = 1;
++    while (b < a) {
++      b = b << 1;
++    }
++    return b;
++  }
++
++  // The same hashing algorithm as the Lexer.
++  // Buckets must be inserted according to this.
++  private static int clangKeyHash(String key) {
++    // Keys are case insensitve.
++    String lowerCaseKey = toLowerCaseAscii(key);
++    int hash = 0;
++    for (byte c : lowerCaseKey.getBytes(StandardCharsets.UTF_8)) {
++      hash += c * 13;
++    }
++    return hash;
++  }
++
++  // Utils from Guava ( FIXME: use those utils )
++  public static String toLowerCaseAscii(String string) {
++    int length = string.length();
++    StringBuilder builder = new StringBuilder(length);
++    for (int i = 0; i < length; i++) {
++      builder.append(toLowerCaseAscii(string.charAt(i)));
++    }
++    return builder.toString();
++  }
++
++  public static char toLowerCaseAscii(char c) {
++    return isUpperCase(c) ? (char) (c ^ 0x20) : c;
++  }
++
++  public static boolean isUpperCase(char c) {
++    return (c >= 'A') && (c <= 'Z');
++  }
++}
++
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/cpp/CppCompilationContext.java b/src/main/java/com/google/devtools/build/lib/rules/cpp/CppCompilationContext.java
+index 1cf525299..f583b5868 100644
+--- a/src/main/java/com/google/devtools/build/lib/rules/cpp/CppCompilationContext.java
++++ b/src/main/java/com/google/devtools/build/lib/rules/cpp/CppCompilationContext.java
+@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.actions.Artifact;
+ import com.google.devtools.build.lib.actions.MiddlemanFactory;
+ import com.google.devtools.build.lib.analysis.RuleContext;
+ import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
++import com.google.devtools.build.lib.cmdline.Label;
+ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
+ import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
+ import com.google.devtools.build.lib.collect.nestedset.Order;
+@@ -48,11 +49,11 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+   public static final CppCompilationContext EMPTY = new Builder(null).build();
+ 
+   private final CommandLineContext commandLineContext;
+-  
++
+   private final NestedSet<PathFragment> declaredIncludeDirs;
+   private final NestedSet<PathFragment> declaredIncludeWarnDirs;
+   private final NestedSet<Artifact> declaredIncludeSrcs;
+-  
++
+   /**
+    * Module maps from direct dependencies.
+    */
+@@ -62,12 +63,13 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+   private final NestedSet<Artifact> nonCodeInputs;
+ 
+   private final NestedSet<Pair<Artifact, Artifact>> pregreppedHdrs;
+-  
++
+   private final ModuleInfo moduleInfo;
+   private final ModuleInfo picModuleInfo;
+ 
+   private final CppModuleMap cppModuleMap;
+   private final CppModuleMap verificationModuleMap;
++  private final ImmutableList<Artifact> headerMaps;
+ 
+   private final boolean propagateModuleMapAsActionInput;
+ 
+@@ -87,7 +89,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+       NestedSet<Artifact> directModuleMaps,
+       CppModuleMap cppModuleMap,
+       @Nullable CppModuleMap verificationModuleMap,
+-      boolean propagateModuleMapAsActionInput) {
++      boolean propagateModuleMapAsActionInput,
++      ImmutableList<Artifact> headerMaps) {
+     Preconditions.checkNotNull(commandLineContext);
+     this.commandLineContext = commandLineContext;
+     this.declaredIncludeDirs = declaredIncludeDirs;
+@@ -98,6 +101,7 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+     this.moduleInfo = moduleInfo;
+     this.picModuleInfo = picModuleInfo;
+     this.cppModuleMap = cppModuleMap;
++    this.headerMaps = headerMaps;
+     this.nonCodeInputs = nonCodeInputs;
+     this.verificationModuleMap = verificationModuleMap;
+     this.compilationPrerequisites = compilationPrerequisites;
+@@ -231,6 +235,9 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+     if (cppModuleMap != null && propagateModuleMapAsActionInput) {
+       builder.add(cppModuleMap.getArtifact());
+     }
++    if (headerMaps != null) {
++      builder.addAll(headerMaps);
++    }
+     return builder.build();
+   }
+ 
+@@ -279,7 +286,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+         context.directModuleMaps,
+         context.cppModuleMap,
+         context.verificationModuleMap,
+-        context.propagateModuleMapAsActionInput);
++        context.propagateModuleMapAsActionInput,
++        context.headerMaps);
+   }
+ 
+   /**
+@@ -331,7 +339,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+         mergeSets(ownerContext.directModuleMaps, libContext.directModuleMaps),
+         libContext.cppModuleMap,
+         libContext.verificationModuleMap,
+-        libContext.propagateModuleMapAsActionInput);
++        libContext.propagateModuleMapAsActionInput,
++        libContext.headerMaps);
+   }
+ 
+   /**
+@@ -400,6 +409,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+     private final Set<String> defines = new LinkedHashSet<>();
+     private CppModuleMap cppModuleMap;
+     private CppModuleMap verificationModuleMap;
++    private ImmutableList<Artifact> headerMaps;
++
+     private boolean propagateModuleMapAsActionInput = true;
+ 
+     /** The rule that owns the context */
+@@ -634,6 +645,11 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+       return this;
+     }
+ 
++    public Builder setHeaderMaps(ImmutableList<Artifact> headerMaps) {
++      this.headerMaps = headerMaps;
++      return this;
++    }
++
+     /** Sets the C++ module map used to verify that headers are modules compatible. */
+     public Builder setVerificationModuleMap(CppModuleMap verificationModuleMap) {
+       this.verificationModuleMap = verificationModuleMap;
+@@ -704,7 +720,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+           directModuleMaps.build(),
+           cppModuleMap,
+           verificationModuleMap,
+-          propagateModuleMapAsActionInput);
++          propagateModuleMapAsActionInput,
++          headerMaps);
+     }
+ 
+     /**
+@@ -760,7 +777,7 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
+               ruleContext.getRule().getRepository()));
+     }
+   }
+-  
++
+   /**
+    * Gathers data about the direct and transitive .pcm files belonging to this context. Can be to
+    * either gather data on PIC or on no-PIC .pcm files.
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/cpp/CppConfiguration.java b/src/main/java/com/google/devtools/build/lib/rules/cpp/CppConfiguration.java
+index 64134d8f1..627620226 100644
+--- a/src/main/java/com/google/devtools/build/lib/rules/cpp/CppConfiguration.java
++++ b/src/main/java/com/google/devtools/build/lib/rules/cpp/CppConfiguration.java
+@@ -1453,6 +1453,13 @@ public class CppConfiguration extends BuildConfiguration.Fragment {
+     return cppOptions.processHeadersInDependencies;
+   }
+ 
++  /**
++   * Returns whether we are implicitly creating header maps.
++   */
++  public boolean experimentalEnableImplicitHeaderMaps() {
++    return cppOptions.experimentalEnableImplicitHeaderMaps;
++  }
++
+   /**
+    * Returns true if Fission is specified for this build and supported by the crosstool.
+    */
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/cpp/CppOptions.java b/src/main/java/com/google/devtools/build/lib/rules/cpp/CppOptions.java
+index 4a6a8579b..804d33632 100644
+--- a/src/main/java/com/google/devtools/build/lib/rules/cpp/CppOptions.java
++++ b/src/main/java/com/google/devtools/build/lib/rules/cpp/CppOptions.java
+@@ -291,6 +291,18 @@ public class CppOptions extends FragmentOptions {
+   )
+   public boolean processHeadersInDependencies;
+ 
++  @Option(
++    name = "experimental_enable_implicit_headermaps",
++    defaultValue = "false",
++    category = "semantics",
++    documentationCategory = OptionDocumentationCategory.UNDOCUMENTED,
++    effectTags = {OptionEffectTag.UNKNOWN},
++    help =
++        "When building a target //a:a, generate a header map containing all of the headrs that //a:a depends "
++            + "on (if header processing is enabled for the toolchain)."
++  )
++  public boolean experimentalEnableImplicitHeaderMaps;
++
+   @Option(
+     name = "copt",
+     allowMultiple = true,
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapAction.java b/src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapAction.java
+new file mode 100644
+index 000000000..c95dd7ab8
+--- /dev/null
++++ b/src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapAction.java
+@@ -0,0 +1,85 @@
++package com.google.devtools.build.lib.rules.cpp;
++
++//TODO: Cleanup Imports
++import com.google.common.annotations.VisibleForTesting;
++import com.google.common.base.Optional;
++import com.google.common.base.Strings;
++import com.google.common.collect.ImmutableList;
++import com.google.common.collect.Iterables;
++import com.google.devtools.build.lib.actions.ActionExecutionContext;
++import com.google.devtools.build.lib.actions.ActionOwner;
++import com.google.devtools.build.lib.actions.Artifact;
++import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
++import com.google.devtools.build.lib.analysis.actions.AbstractFileWriteAction;
++import com.google.devtools.build.lib.concurrent.ThreadSafety.Immutable;
++import com.google.devtools.build.lib.util.Fingerprint;
++import com.google.devtools.build.lib.vfs.PathFragment;
++import java.io.IOException;
++import java.io.OutputStream;//?
++import java.io.DataOutputStream;//?
++import java.nio.ByteBuffer;
++import java.nio.channels.Channels;
++import java.nio.channels.WritableByteChannel;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.Collection;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Map;
++import java.nio.channels.FileChannel;
++import java.io.FileOutputStream;
++
++@Immutable
++public final class HeaderMapAction extends AbstractFileWriteAction {
++
++  private static final String GUID = "4f407081-1951-40c1-befc-d6b4daff5de3";
++
++  // C++ header map of the current target
++  private final Map <String, String> headerMap;
++
++  public HeaderMapAction(
++      ActionOwner owner,
++      Map <String, String> headerMap,
++      Artifact output
++      ) {
++    super(
++        owner,
++        ImmutableList.<Artifact>builder().build(),
++        output,
++        /*makeExecutable=*/ false);
++    this.headerMap = headerMap;
++  }
++
++  @Override
++  public DeterministicWriter newDeterministicWriter(ActionExecutionContext ctx)  {
++    return new DeterministicWriter() {
++      @Override
++      public void writeOutputFile(OutputStream out) throws IOException {
++        ClangHeaderMap hmap = new ClangHeaderMap(headerMap);
++        ByteBuffer b = hmap.buff;
++        b.flip();
++        WritableByteChannel channel = Channels.newChannel(out);
++        channel.write(b);
++        out.flush();
++        out.close();
++      }
++    };
++  }
++
++  @Override
++  public String getMnemonic() {
++    return "CppHeaderMap";
++  }
++
++  @Override
++  protected String computeKey() {
++    Fingerprint f = new Fingerprint();
++    f.addString(GUID);
++    for(Map.Entry<String, String> entry: headerMap.entrySet()){
++      String key = entry.getKey();
++      String path = entry.getValue();
++      f.addString(key + "->" + path);
++    }
++    return f.hexDigestAndReset();
++  }
++}
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapInfo.java b/src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapInfo.java
+new file mode 100644
+index 000000000..6d9dd99bd
+--- /dev/null
++++ b/src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapInfo.java
+@@ -0,0 +1,86 @@
++package com.google.devtools.build.lib.rules.cpp;
++
++import com.google.devtools.build.lib.vfs.Path;
++import java.util.Collection;
++import java.util.List;
++import java.util.HashMap;
++import java.util.Map;
++import com.google.devtools.build.lib.actions.Artifact;
++import com.google.common.collect.ImmutableMap;
++import com.google.common.collect.ImmutableList;
++
++public class HeaderMapInfo {
++  private final ImmutableMap<String, String> sources;
++
++  public final static HeaderMapInfo EMPTY = new HeaderMapInfo(ImmutableMap.of());
++
++  private HeaderMapInfo(ImmutableMap<String, String> sources) {
++    this.sources = sources;
++  }
++
++  public ImmutableMap<String, String> getSources() {
++    return sources;
++  }
++
++  /** Builder for HeaderMapInfo */
++  public static class Builder {
++    private final ImmutableList.Builder<Artifact> basicHeaders = ImmutableList.builder();
++    private final ImmutableList.Builder<Artifact> namespacedHeaders = ImmutableList.builder();
++    private final ImmutableList.Builder<HeaderMapInfo> mergedHeaderMapInfos = ImmutableList.builder();
++    private String namespace = "";
++
++    /** Set the namespace. */
++    public Builder setNamespace(String namespace) {
++      this.namespace = namespace;
++      return this;
++    }
++
++    /** Signals that the build uses headers. */
++    public Builder addHeaders(Iterable<Artifact> headers) {
++      this.basicHeaders.addAll(headers);
++      return this;
++    }
++
++    /** Signals that the build uses headers under the namespace. */
++    public Builder addNamespacedHeaders(Iterable<Artifact> headers) {
++      this.namespacedHeaders.addAll(headers);
++      return this;
++    }
++
++    /**
++     * Merge a header map info.
++     * Merged HeaderMapInfos are merged in reverse that they were added.
++     * Directly added headers take precedence over those that were merged.
++     */
++    public Builder mergeHeaderMapInfo(HeaderMapInfo info) {
++      this.mergedHeaderMapInfos.add(info);
++      return this;
++    }
++
++    public HeaderMapInfo build() {
++      Map inputMap = new HashMap();
++      for (HeaderMapInfo info: mergedHeaderMapInfos.build().reverse()){
++        for (Map.Entry<String, String> entry: info.getSources().entrySet()){
++          inputMap.put(entry.getKey(), entry.getValue());
++        }
++      }
++
++      for (Artifact hdr : basicHeaders.build()) {
++        inputMap.put(hdr.getPath().getBaseName(), hdr.getExecPath().getPathString());
++      }
++
++      // If there is no namespace, don't add a slash
++      if (namespace.equals("") == false) {
++        for (Artifact hdr : namespacedHeaders.build()) {
++          String namespacedKey = namespace + "/" + hdr.getPath().getBaseName();
++          inputMap.put(namespacedKey, hdr.getExecPath().getPathString());
++        }
++      } else {
++        for (Artifact hdr : namespacedHeaders.build()) {
++          inputMap.put(hdr.getPath().getBaseName(), hdr.getExecPath().getPathString());
++        }
++      }
++      return new HeaderMapInfo(ImmutableMap.copyOf(inputMap));
++    }
++  }
++}
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapInfoProvider.java b/src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapInfoProvider.java
+new file mode 100644
+index 000000000..0fa716cc3
+--- /dev/null
++++ b/src/main/java/com/google/devtools/build/lib/rules/cpp/HeaderMapInfoProvider.java
+@@ -0,0 +1,33 @@
++package com.google.devtools.build.lib.rules.cpp;
++
++import com.google.common.collect.ImmutableList;
++import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
++import com.google.devtools.build.lib.util.FileTypeSet;
++
++public class HeaderMapInfoProvider implements TransitiveInfoProvider {
++  private HeaderMapInfo info;
++
++  public static HeaderMapInfoProvider EMPTY = new HeaderMapInfoProvider(HeaderMapInfo.EMPTY);
++
++  public HeaderMapInfo getInfo() {
++    return info;
++  }
++
++  private HeaderMapInfoProvider(HeaderMapInfo info) {
++    this.info = info;
++  }
++
++  /** Builder for HeaderMapInfoProvider */
++  public static class Builder {
++    private HeaderMapInfo info;
++
++    public Builder setHeaderMapInfo(HeaderMapInfo info) {
++      this.info = info;
++      return this;
++    }
++
++    public HeaderMapInfoProvider build() {
++      return new HeaderMapInfoProvider(this.info);
++    }
++  }
++}
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcCommon.java b/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcCommon.java
+index cd4553c5e..8560ef5c4 100644
+--- a/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcCommon.java
++++ b/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcCommon.java
+@@ -69,17 +69,27 @@ import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
+ import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
+ import com.google.devtools.build.lib.packages.Info;
+ import com.google.devtools.build.lib.packages.NativeProvider;
++import com.google.devtools.build.lib.packages.Rule;
+ import com.google.devtools.build.lib.rules.apple.AppleToolchain;
+ import com.google.devtools.build.lib.rules.cpp.CcLinkParams;
+ import com.google.devtools.build.lib.rules.cpp.CcLinkParamsProvider;
+ import com.google.devtools.build.lib.rules.cpp.CppCompilationContext;
++import com.google.devtools.build.lib.rules.cpp.CppConfiguration;
++import com.google.devtools.build.lib.rules.cpp.CppFileTypes;
+ import com.google.devtools.build.lib.rules.cpp.CppModuleMap;
++import com.google.devtools.build.lib.rules.cpp.HeaderMapAction;
++import com.google.devtools.build.lib.rules.cpp.HeaderMapInfo;
++import com.google.devtools.build.lib.rules.cpp.HeaderMapInfoProvider;
++import com.google.devtools.build.lib.syntax.Type;
+ import com.google.devtools.build.lib.util.FileType;
+ import com.google.devtools.build.lib.util.Preconditions;
+ import com.google.devtools.build.lib.vfs.PathFragment;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Set;
++import java.util.HashMap;
++import java.util.Map;
++import com.google.devtools.build.lib.actions.Root;
+ 
+ /**
+  * Contains information common to multiple objc_* rules, and provides a unified API for extracting
+@@ -154,6 +164,7 @@ public final class ObjcCommon {
+     private Iterable<Artifact> dynamicFrameworkImports = ImmutableList.of();
+     private Optional<CompilationArtifacts> compilationArtifacts = Optional.absent();
+     private Iterable<ObjcProvider> depObjcProviders = ImmutableList.of();
++    private Iterable<HeaderMapInfoProvider> headerMapInfoProviders = ImmutableList.of();
+     private Iterable<ObjcProvider> directDepObjcProviders = ImmutableList.of();
+     private Iterable<ObjcProvider> runtimeDepObjcProviders = ImmutableList.of();
+     private Iterable<String> defines = ImmutableList.of();
+@@ -358,6 +369,30 @@ public final class ObjcCommon {
+       return this;
+     }
+ 
++    public HeaderMapInfoProvider getHeaderMapInfoProvider(RuleContext ruleContext, ImmutableList<Artifact>hdrs){
++      HeaderMapInfo.Builder headerMapInfo = new HeaderMapInfo.Builder();
++      String namespace;
++      if (ruleContext.attributes().has("header_namespace")) {
++         namespace = ruleContext.attributes().get("header_namespace", Type.STRING);
++      } else {
++         namespace = ruleContext.getRule().getName();
++      }
++
++      headerMapInfo.setNamespace(namespace);
++      headerMapInfo.addHeaders(hdrs);
++      headerMapInfo.addNamespacedHeaders(hdrs);
++
++      if (ruleContext.attributes().has("deps")){
++        // Propagate all of the dep sources
++        for (HeaderMapInfoProvider hmapProvider : ruleContext.getPrerequisites("deps", Mode.TARGET, HeaderMapInfoProvider.class)) {
++          headerMapInfo.mergeHeaderMapInfo(hmapProvider.getInfo());
++        }
++      }
++      return new HeaderMapInfoProvider.Builder()
++        .setHeaderMapInfo(headerMapInfo.build()).build();
++    }
++
++
+     /**
+      * Specifies that this target has a clang module map. This should be called if this target
+      * compiles sources or exposes headers for other targets to use. Note that this does not add
+@@ -404,6 +439,7 @@ public final class ObjcCommon {
+     ObjcCommon build() {
+ 
+       Iterable<BundleableFile> bundleImports = BundleableFile.bundleImportsFromRule(context);
++      ImmutableList.Builder<Artifact> headerMapHeaders = ImmutableList.<Artifact>builder();
+ 
+       ObjcProvider.Builder objcProvider =
+           new ObjcProvider.Builder()
+@@ -441,6 +477,8 @@ public final class ObjcCommon {
+ 
+       for (CppCompilationContext headerProvider : depCcHeaderProviders) {
+         objcProvider.addAll(HEADER, filterFileset(headerProvider.getDeclaredIncludeSrcs()));
++        headerMapHeaders.addAll(filterFileset(headerProvider.getDeclaredIncludeSrcs()));
++
+         objcProvider.addAll(INCLUDE, headerProvider.getIncludeDirs());
+         // TODO(bazel-team): This pulls in stl via CppHelper.mergeToolchainDependentContext but
+         // probably shouldn't.
+@@ -477,6 +515,9 @@ public final class ObjcCommon {
+                     AppleToolchain.sdkDir() + "/usr/include/",
+                     PathFragment.safePathStrings(attributes.sdkIncludes())),
+                 PathFragment::create);
++
++        headerMapHeaders.addAll(filterFileset(attributes.hdrs()));
++        headerMapHeaders.addAll(filterFileset(attributes.textualHdrs()));
+         objcProvider
+             .addAll(HEADER, filterFileset(attributes.hdrs()))
+             .addAll(HEADER, filterFileset(attributes.textualHdrs()))
+@@ -526,6 +567,7 @@ public final class ObjcCommon {
+             Iterables.concat(artifacts.getSrcs(), artifacts.getNonArcSrcs());
+         // TODO(bazel-team): Add private headers to the provider when we have module maps to enforce
+         // them.
++        headerMapHeaders.addAll(artifacts.getPrivateHdrs());
+         objcProvider
+             .addAll(HEADER, filterFileset(artifacts.getAdditionalHdrs()))
+             .addAll(LIBRARY, artifacts.getArchive().asSet())
+@@ -578,7 +620,14 @@ public final class ObjcCommon {
+             .add(DEBUG_SYMBOLS_PLIST, intermediateArtifacts.dsymPlist(dsymOutputType));
+       }
+ 
+-      return new ObjcCommon(objcProvider.build(), compilationArtifacts);
++      HeaderMapInfoProvider headerMapProvider;
++      if (context.isLegalFragment(CppConfiguration.class) && context.getFragment(CppConfiguration.class).experimentalEnableImplicitHeaderMaps()) {
++        headerMapProvider = getHeaderMapInfoProvider(context, headerMapHeaders.build());
++      } else {
++        headerMapProvider = HeaderMapInfoProvider.EMPTY;
++      }
++
++      return new ObjcCommon(objcProvider.build(), headerMapProvider, compilationArtifacts);
+     }
+ 
+     private static boolean isCcLibrary(TransitiveInfoCollection info) {
+@@ -615,12 +664,14 @@ public final class ObjcCommon {
+ 
+   public static final FileType FRAMEWORK_CONTAINER_TYPE = FileType.of(".framework");
+   private final ObjcProvider objcProvider;
++  private final HeaderMapInfoProvider headerMapInfoProvider;
+ 
+   private final Optional<CompilationArtifacts> compilationArtifacts;
+ 
+   private ObjcCommon(
+-      ObjcProvider objcProvider, Optional<CompilationArtifacts> compilationArtifacts) {
++    ObjcProvider objcProvider, HeaderMapInfoProvider headerMapInfoProvider, Optional<CompilationArtifacts> compilationArtifacts) {
+     this.objcProvider = Preconditions.checkNotNull(objcProvider);
++    this.headerMapInfoProvider = headerMapInfoProvider;
+     this.compilationArtifacts = Preconditions.checkNotNull(compilationArtifacts);
+   }
+ 
+@@ -628,6 +679,10 @@ public final class ObjcCommon {
+     return objcProvider;
+   }
+ 
++  public HeaderMapInfoProvider getHeaderMapInfoProvider() {
++    return headerMapInfoProvider;
++  }
++
+   public Optional<CompilationArtifacts> getCompilationArtifacts() {
+     return compilationArtifacts;
+   }
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcLibrary.java b/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcLibrary.java
+index c45c37854..0d9b25c61 100644
+--- a/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcLibrary.java
++++ b/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcLibrary.java
+@@ -22,6 +22,7 @@ import com.google.devtools.build.lib.collect.nestedset.NestedSet;
+ import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
+ import com.google.devtools.build.lib.rules.RuleConfiguredTargetFactory;
+ import com.google.devtools.build.lib.rules.cpp.CcLinkParamsProvider;
++import com.google.devtools.build.lib.rules.cpp.HeaderMapInfoProvider;
+ import com.google.devtools.build.lib.rules.objc.ObjcCommon.ResourceAttributes;
+ import com.google.devtools.build.lib.rules.test.InstrumentedFilesProvider;
+ import com.google.devtools.build.lib.syntax.Type;
+@@ -91,6 +92,7 @@ public class ObjcLibrary implements RuleConfiguredTargetFactory {
+ 
+     return ObjcRuleClasses.ruleConfiguredTarget(ruleContext, filesToBuild.build())
+         .addNativeDeclaredProvider(common.getObjcProvider())
++        .addProvider(common.getHeaderMapInfoProvider())
+         .addProvider(J2ObjcEntryClassProvider.class, j2ObjcEntryClassProvider)
+         .addProvider(J2ObjcMappingFileProvider.class, j2ObjcMappingFileProvider)
+         .addProvider(
+diff --git a/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcRuleClasses.java b/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcRuleClasses.java
+index a1138a28d..a6f0dd747 100644
+--- a/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcRuleClasses.java
++++ b/src/main/java/com/google/devtools/build/lib/rules/objc/ObjcRuleClasses.java
+@@ -722,6 +722,12 @@ public class ObjcRuleClasses {
+           .add(
+               attr("module_map", LABEL)
+                   .allowedFileTypes(FileType.of(".modulemap")))
++          /* <!--
++           * #BLAZE_RULE($objc_compiling_rule).ATTRIBUTE(header_namespace) -->
++          The namespace that headers in this rule may be imported as.
++          If not set, it defaults to the name of the target.
++          <!-- #END_BLAZE_RULE.ATTRIBUTE -->*/
++          .add(attr("header_namespace", Type.STRING))
+           /* Provides the label for header_scanner tool that is used to scan inclusions for ObjC
+           sources and provide a list of required headers via a .header_list file.
+ 
+diff --git a/src/test/java/com/google/devtools/build/lib/rules/cpp/ClangHeaderMapTest.java b/src/test/java/com/google/devtools/build/lib/rules/cpp/ClangHeaderMapTest.java
+new file mode 100644
+index 000000000..ef7decb02
+--- /dev/null
++++ b/src/test/java/com/google/devtools/build/lib/rules/cpp/ClangHeaderMapTest.java
+@@ -0,0 +1,41 @@
++// Copyright 2015 The Bazel Authors. All rights reserved.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//    http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++package com.google.devtools.build.lib.rules.cpp;
++
++import static com.google.common.truth.Truth.assertThat;
++
++import com.google.devtools.build.lib.testutil.FoundationTestCase;
++import java.util.HashMap;
++import java.util.Map;
++import org.junit.Before;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.junit.runners.JUnit4;
++
++
++public class ClangHeaderMapTest extends FoundationTestCase {
++  @Test
++  public void testNamespacedHeaderMap() {
++    Map<String, String> paths = new HashMap();
++    paths.put("MyHeader.h", "include/MyHeader.h");
++    paths.put("X/MyHeader2.h", "include/MyHeader2.h");
++    paths.put("X/MyHeader3.h", "include/MyHeader3.h");
++
++    ClangHeaderMap hmap = new ClangHeaderMap(paths);
++    assertThat(hmap.get("MyHeader.h")).isEqualTo("include/MyHeader.h");
++    assertThat(hmap.get("X/MyHeader2.h")).isEqualTo("include/MyHeader2.h");
++    assertThat(hmap.get("X/MyHeader3.h")).isEqualTo("include/MyHeader3.h");
++  }
++}
++
+diff --git a/src/test/java/com/google/devtools/build/lib/rules/objc/ObjcLibraryTest.java b/src/test/java/com/google/devtools/build/lib/rules/objc/ObjcLibraryTest.java
+index 9e2d0c07d..d9fae05e3 100644
+--- a/src/test/java/com/google/devtools/build/lib/rules/objc/ObjcLibraryTest.java
++++ b/src/test/java/com/google/devtools/build/lib/rules/objc/ObjcLibraryTest.java
+@@ -1461,6 +1461,41 @@ public class ObjcLibraryTest extends ObjcRuleTestCase {
+     assertThat(getConfiguredTarget("//x:objc")).isNotNull();
+   }
+ 
++  @Test
++  public void testObjcNamespacedImports() throws Exception {
++    useConfiguration(
++        "--crosstool_top=" + MockObjcSupport.DEFAULT_OSX_CROSSTOOL,
++        "--experimental_objc_crosstool=all",
++        "--experimental_enable_implicit_headermaps=true");
++    scratch.file(
++        "x/importer.m",
++        // By default, we would be able to import this header
++        // under the namespace of dep_liba.
++        "#import \"dep_liba/header.h\"",
++        // This header has a custom namespace
++        "#import \"some/headerb.h\"");
++    scratch.file(
++        "x/headerb.h");
++    scratch.file(
++        "x/BUILD",
++        "objc_library(",
++        "   name = 'objc',",
++        "   srcs = ['importer.m'],",
++        "   deps = [':dep_liba', ':dep_libb'],",
++        ")",
++        "objc_library(",
++        "   name = 'dep_liba',",
++        "   hdrs = ['header.h'],",
++        ")",
++        "objc_library(",
++        "   name = 'dep_libb',",
++        "   header_namespace = 'some',",
++        "   hdrs = ['headerb.h'],",
++        ")");
++
++    assertThat(getConfiguredTarget("//x:objc")).isNotNull();
++  }
++
+   @Test
+   public void testObjcImportDoesNotCrash() throws Exception {
+     useConfiguration(
+-- 
+2.14.1
+
