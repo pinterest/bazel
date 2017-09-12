@@ -310,6 +310,7 @@ public class CppCompileActionBuilder {
    * Consumer} to collect validation errors.
    */
   public CppCompileAction buildAndVerify(Consumer<String> errorCollector) {
+//    System.out.println("CppCompileAction.buildAndVerify");
     // This must be set either to false or true by CppSemantics, otherwise someone forgot to call
     // finalizeCompileActionBuilder on this builder.
     Preconditions.checkNotNull(shouldScanIncludes);

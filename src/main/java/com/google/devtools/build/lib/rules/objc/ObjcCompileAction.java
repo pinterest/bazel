@@ -460,6 +460,7 @@ public class ObjcCompileAction extends SpawnAction {
         CharSequence progressMessage,
         RunfilesSupplier runfilesSupplier,
         String mnemonic) {
+//      System.out.println("RegisterObjcAction");
       return new ObjcCompileAction(
           owner,
           tools,

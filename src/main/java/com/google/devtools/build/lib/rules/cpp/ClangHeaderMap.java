@@ -95,7 +95,6 @@ public final class ClangHeaderMap {
   // https://clang.llvm.org/doxygen/HeaderMap_8cpp_source.html
   ClangHeaderMap(Map<String, String> headerPathsByKeys) {
     int dataOffset = 1;
-    System.out.println(headerPathsByKeys);
     setMap(headerPathsByKeys);
 
     int endBuckets = HEADER_SIZE + numBuckets * BUCKET_SIZE;
@@ -189,7 +188,7 @@ public final class ClangHeaderMap {
     }
   }
 
-  private void addBucket(HMapBucket bucket) {
+  private void addBucket(HMapBucket bucket, HMapBucket[] buckets, int numBuckets) {
     String key = bucket.key;
     int bucketIdx = clangKeyHash(key) & (numBuckets - 1);
 
@@ -205,30 +204,31 @@ public final class ClangHeaderMap {
     //
     // The lexer does a linear scan of the hash table when keys do
     // not match, starting at the bucket.
+    // FIXME: Improve loading. We shouldn't max out the buckets.
     while(bucketIdx < numBuckets) {
+      bucketIdx = (bucketIdx + 1) & (numBuckets - 1);
       if (buckets[bucketIdx] == null) {
         buckets[bucketIdx] = bucket;
         return;
       }
-      bucketIdx = (bucketIdx + 1) & (numBuckets - 1);
     }
 
     // If there are no more slots left, grow by a power of 2
     int newNumBuckets = numBuckets * 2;
     HMapBucket[] newBuckets = new HMapBucket[newNumBuckets];
-    for(int i = 0; i < numBuckets; i++) {
-      HMapBucket cpBucket = buckets[i];
+    
+    HMapBucket[] oldBuckets = buckets;
+    this.buckets = newBuckets;
+    this.numBuckets = newNumBuckets;
+    
+    for(HMapBucket cpBucket: oldBuckets) {
       if (cpBucket != null) {
-        int cpBucketIdx = clangKeyHash(cpBucket.key) & (newNumBuckets - 1);
-        newBuckets[cpBucketIdx] = cpBucket;
+        addBucket(cpBucket, newBuckets, newNumBuckets);
       }
     }
 
-    buckets = newBuckets;
-    numBuckets = newNumBuckets;
-
     // Start again
-    addBucket(bucket);
+    addBucket(bucket, newBuckets, newNumBuckets);
   }
 
   private void setMap(Map<String, String> headerPathsByKeys){
@@ -237,7 +237,7 @@ public final class ClangHeaderMap {
     maxStringsSize = 0;
 
     // Per the format, buckets need to be powers of 2 in size
-    numBuckets = getNextPowerOf2(headerPathsByKeys.size());
+    numBuckets = getNextPowerOf2(headerPathsByKeys.size() + 1);
     buckets = new HMapBucket[numBuckets];
 
     for(Map.Entry<String, String> entry: headerPathsByKeys.entrySet()){
@@ -258,7 +258,7 @@ public final class ClangHeaderMap {
       }
 
       HMapBucket bucket = new HMapBucket(key, prefix, suffix);
-      addBucket(bucket);
+      addBucket(bucket, buckets, numBuckets);
       int prefixLen = prefix.getBytes().length + 1;
       int suffixLen = suffix.getBytes().length + 1;
       int keyLen = key.getBytes().length + 1;

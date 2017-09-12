@@ -59,16 +59,20 @@ import com.google.devtools.build.lib.syntax.Type;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.Preconditions;
+import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import javax.annotation.Nullable;
+
+import com.google.devtools.build.lib.actions.Root;
 
 /**
  * A class to create C/C++ compile and link actions in a way that is consistent with cc_library.
@@ -1367,11 +1371,61 @@ public final class CcLibraryHelper {
       }
     }
 
+    // TODO: Clean this up and have an `experimental` configuration
+    // Change synthesized artifacts to a HeaderMap artifact or something
+    List<Artifact> synthisizedArtifacts = new ArrayList<>();
+    
+    // Add HeaderMaps implicitly
+    {
+        // Create output files: a .hmap based on the target name
+      String targetName = ruleContext.getTarget().getName();
+      Root root = ruleContext.getBinOrGenfilesDirectory();
+      PathFragment path = PathFragment.create(targetName + ".hmap");
+      Artifact out = ruleContext.getPackageRelativeArtifact(path,
+                ruleContext
+                .getConfiguration()
+                .getGenfilesDirectory(ruleContext.getRule().getRepository()));
+      // Create an input map based on relative paths.
+      // Consider moving this to ABS (i.e. Xcode )
+      Map<String, String> inputMap = new HashMap();
+
+      // These are all the headers entered into `hdrs`
+      //
+      // Pods: this is the public headers
+      // Maybe this uses the header namespace
+      for (Artifact hdr: publicHeaders.getHeaders()) {
+        Path hdrPath = hdr.getPath();
+        inputMap.put(hdrPath.getBaseName(), hdr.getRootRelativePath().getPathString());
+      }
+
+      // These are all of the headers entered into `srcs`.
+      // For example: Genfiles Workaround
+      //
+      // Pods: Under CocoaPods, this is the non propagated headers
+      for (Artifact hdr: privateHeaders) {
+        Path hdrPath = hdr.getPath();
+        inputMap.put(hdrPath.getBaseName(), hdr.getRootRelativePath().getPathString());
+      }
+
+      for (Artifact hdr: publicTextualHeaders) {
+        Path hdrPath = hdr.getPath();
+        inputMap.put(hdrPath.getBaseName(), hdr.getRootRelativePath().getPathString());
+      }
+      
+      ruleContext.registerAction(
+        new HeaderMapAction(ruleContext.getActionOwner(),
+            inputMap,
+            out));
+      synthisizedArtifacts.add(out);
+    }
+
+
     if (featureConfiguration.isEnabled(CppRuleClasses.MODULE_MAPS)) {
       if (cppModuleMap == null) {
         cppModuleMap = CppHelper.createDefaultCppModuleMap(ruleContext, /*suffix=*/ "");
       }
 
+      contextBuilder.setAdditionalArtifacts(synthisizedArtifacts);
       contextBuilder.setPropagateCppModuleMapAsActionInput(propagateModuleMapToCompileAction);
       contextBuilder.setCppModuleMap(cppModuleMap);
       // There are different modes for module compilation:

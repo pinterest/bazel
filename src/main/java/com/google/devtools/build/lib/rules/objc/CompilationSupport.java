@@ -694,6 +694,7 @@ public abstract class CompilationSupport {
    * attribute of this rule.
    */
   CompilationSupport registerGenerateModuleMapAction(CompilationArtifacts compilationArtifacts) {
+//    System.out.println("registerGenerateModuleMapAction");
     // TODO(bazel-team): Include textual headers in the module map when Xcode 6 support is
     // dropped.
     // TODO(b/32225593): Include private headers in the module map.

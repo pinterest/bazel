@@ -68,6 +68,7 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
 
   private final CppModuleMap cppModuleMap;
   private final CppModuleMap verificationModuleMap;
+  private final List<Artifact> additionalArtifacts;
 
   private final boolean propagateModuleMapAsActionInput;
 
@@ -87,7 +88,9 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
       NestedSet<Artifact> directModuleMaps,
       CppModuleMap cppModuleMap,
       @Nullable CppModuleMap verificationModuleMap,
-      boolean propagateModuleMapAsActionInput) {
+      boolean propagateModuleMapAsActionInput,
+      List<Artifact> additionalArtifacts
+      ) {
     Preconditions.checkNotNull(commandLineContext);
     this.commandLineContext = commandLineContext;
     this.declaredIncludeDirs = declaredIncludeDirs;
@@ -98,6 +101,7 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
     this.moduleInfo = moduleInfo;
     this.picModuleInfo = picModuleInfo;
     this.cppModuleMap = cppModuleMap;
+    this.additionalArtifacts = additionalArtifacts;
     this.nonCodeInputs = nonCodeInputs;
     this.verificationModuleMap = verificationModuleMap;
     this.compilationPrerequisites = compilationPrerequisites;
@@ -231,6 +235,11 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
     if (cppModuleMap != null && propagateModuleMapAsActionInput) {
       builder.add(cppModuleMap.getArtifact());
     }
+    if (additionalArtifacts != null) {
+      for (Artifact a: additionalArtifacts) {
+        builder.add(a);
+      }
+    }
     return builder.build();
   }
 
@@ -279,7 +288,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
         context.directModuleMaps,
         context.cppModuleMap,
         context.verificationModuleMap,
-        context.propagateModuleMapAsActionInput);
+        context.propagateModuleMapAsActionInput,
+        context.additionalArtifacts);
   }
 
   /**
@@ -331,7 +341,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
         mergeSets(ownerContext.directModuleMaps, libContext.directModuleMaps),
         libContext.cppModuleMap,
         libContext.verificationModuleMap,
-        libContext.propagateModuleMapAsActionInput);
+        libContext.propagateModuleMapAsActionInput,
+        libContext.additionalArtifacts);
   }
 
   /**
@@ -400,6 +411,7 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
     private final Set<String> defines = new LinkedHashSet<>();
     private CppModuleMap cppModuleMap;
     private CppModuleMap verificationModuleMap;
+    private List<Artifact> additionalArtifacts;
     private boolean propagateModuleMapAsActionInput = true;
 
     /** The rule that owns the context */
@@ -634,6 +646,17 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
       return this;
     }
 
+    public Builder setAdditionalArtifacts(List<Artifact> artifacts) {
+      this.additionalArtifacts = artifacts;
+      for (Artifact a : artifacts) {
+        // FIXME: this needs to be system include based on the hmap type
+        //addSystemIncludeDir(a.getRootRelativePath());
+        addQuoteIncludeDir(a.getExecPath());
+      }
+      return this;
+    }
+
+
     /** Sets the C++ module map used to verify that headers are modules compatible. */
     public Builder setVerificationModuleMap(CppModuleMap verificationModuleMap) {
       this.verificationModuleMap = verificationModuleMap;
@@ -704,7 +727,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
           directModuleMaps.build(),
           cppModuleMap,
           verificationModuleMap,
-          propagateModuleMapAsActionInput);
+          propagateModuleMapAsActionInput,
+          additionalArtifacts);
     }
 
     /**
