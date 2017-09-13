@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.MiddlemanFactory;
 import com.google.devtools.build.lib.analysis.RuleContext;
 import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
@@ -70,6 +71,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
   private final CppModuleMap verificationModuleMap;
   private final List<Artifact> additionalArtifacts;
 
+  private final String headerMapNamespace;
+
   private final boolean propagateModuleMapAsActionInput;
 
   // Derived from depsContexts.
@@ -89,8 +92,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
       CppModuleMap cppModuleMap,
       @Nullable CppModuleMap verificationModuleMap,
       boolean propagateModuleMapAsActionInput,
-      List<Artifact> additionalArtifacts
-      ) {
+      List<Artifact> additionalArtifacts,
+      String headerMapNamespace) {
     Preconditions.checkNotNull(commandLineContext);
     this.commandLineContext = commandLineContext;
     this.declaredIncludeDirs = declaredIncludeDirs;
@@ -106,6 +109,7 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
     this.verificationModuleMap = verificationModuleMap;
     this.compilationPrerequisites = compilationPrerequisites;
     this.propagateModuleMapAsActionInput = propagateModuleMapAsActionInput;
+    this.headerMapNamespace = headerMapNamespace;
   }
 
   /**
@@ -270,6 +274,11 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
     return commandLineContext.defines;
   }
 
+  public String getHeaderMapNamespace() {
+    return headerMapNamespace;
+  }
+
+
   /**
    * Returns a context that is based on a given context but returns empty sets
    * for {@link #getDeclaredIncludeDirs()} and {@link #getDeclaredIncludeWarnDirs()}.
@@ -289,7 +298,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
         context.cppModuleMap,
         context.verificationModuleMap,
         context.propagateModuleMapAsActionInput,
-        context.additionalArtifacts);
+        context.additionalArtifacts,
+        context.headerMapNamespace);
   }
 
   /**
@@ -342,7 +352,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
         libContext.cppModuleMap,
         libContext.verificationModuleMap,
         libContext.propagateModuleMapAsActionInput,
-        libContext.additionalArtifacts);
+        libContext.additionalArtifacts,
+        libContext.headerMapNamespace);
   }
 
   /**
@@ -412,6 +423,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
     private CppModuleMap cppModuleMap;
     private CppModuleMap verificationModuleMap;
     private List<Artifact> additionalArtifacts;
+    private String headerMapNamespace;
+    
     private boolean propagateModuleMapAsActionInput = true;
 
     /** The rule that owns the context */
@@ -651,11 +664,14 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
       for (Artifact a : artifacts) {
         // FIXME: this needs to be system include based on the hmap type
         //addSystemIncludeDir(a.getRootRelativePath());
-        addQuoteIncludeDir(a.getExecPath());
       }
       return this;
     }
-
+    
+    public Builder setHeaderMapNamespace(String headerMapNamespace) {
+      this.headerMapNamespace = headerMapNamespace;
+      return this;
+    }
 
     /** Sets the C++ module map used to verify that headers are modules compatible. */
     public Builder setVerificationModuleMap(CppModuleMap verificationModuleMap) {
@@ -728,7 +744,8 @@ public final class CppCompilationContext implements TransitiveInfoProvider {
           cppModuleMap,
           verificationModuleMap,
           propagateModuleMapAsActionInput,
-          additionalArtifacts);
+          additionalArtifacts,
+          headerMapNamespace);
     }
 
     /**

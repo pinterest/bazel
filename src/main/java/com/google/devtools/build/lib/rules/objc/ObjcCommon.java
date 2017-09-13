@@ -14,6 +14,10 @@
 
 package com.google.devtools.build.lib.rules.objc;
 
+import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
+import com.google.devtools.build.lib.syntax.SkylarkType;
+import com.google.devtools.build.lib.syntax.Type;
+
 import static com.google.devtools.build.lib.packages.BuildType.LABEL;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.ASSET_CATALOG;
 import static com.google.devtools.build.lib.rules.objc.ObjcProvider.BUNDLE_FILE;
@@ -67,12 +71,15 @@ import com.google.devtools.build.lib.analysis.TransitiveInfoProvider;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.packages.Info;
 import com.google.devtools.build.lib.packages.NativeProvider;
+import com.google.devtools.build.lib.packages.Rule;
 import com.google.devtools.build.lib.rules.apple.AppleToolchain;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParams;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParamsInfo;
 import com.google.devtools.build.lib.rules.cpp.CppCompilationContext;
 import com.google.devtools.build.lib.rules.cpp.CppFileTypes;
 import com.google.devtools.build.lib.rules.cpp.CppModuleMap;
+import com.google.devtools.build.lib.rules.cpp.HeaderMapAction;
+import com.google.devtools.build.lib.rules.cpp.HeaderMapInfoProvider;
 import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.FileTypeSet;
 import com.google.devtools.build.lib.util.Preconditions;
@@ -80,6 +87,9 @@ import com.google.devtools.build.lib.vfs.PathFragment;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
+import com.google.devtools.build.lib.actions.Root;
 
 /**
  * Contains information common to multiple objc_* rules, and provides a unified API for extracting
@@ -257,7 +267,6 @@ public final class ObjcCommon {
           ImmutableList.<CppCompilationContext>builder();
       ImmutableList.Builder<CcLinkParamsInfo> cppDepLinkParams =
           ImmutableList.<CcLinkParamsInfo>builder();
-
       for (TransitiveInfoCollection dep : deps) {
         addAnyProviders(propagatedObjcDeps, dep, ObjcProvider.SKYLARK_CONSTRUCTOR);
         addAnyProviders(cppDeps, dep, CppCompilationContext.class);
@@ -271,6 +280,7 @@ public final class ObjcCommon {
       this.depCcLinkProviders = Iterables.concat(this.depCcLinkProviders, cppDepLinkParams.build());
       return this;
     }
+
 
     /**
      * Adds providers for runtime frameworks included in the final app bundle but not linked with
@@ -621,6 +631,42 @@ public final class ObjcCommon {
 
   public ObjcProvider getObjcProvider() {
     return objcProvider;
+  }
+
+  public HeaderMapInfoProvider getHeaderMapInfoProvider(RuleContext ruleContext){
+    HeaderMapInfoProvider.Builder hmapInfo = new HeaderMapInfoProvider.Builder();
+    String namespace = ruleContext.getRule().getName();
+    String packageName = ruleContext.getRule().getLabel().getPackageName();
+    Object hdrsValue = objcProvider.getValue("header");
+    SkylarkNestedSet hdrs = (SkylarkNestedSet)hdrsValue;
+    for (Object hdrValue : hdrs.toCollection()) {
+        Artifact hdr = (Artifact)hdrValue;
+       if (hdr.getOwner().getPackageName().equals(packageName)) {
+          hmapInfo.addSource(hdr.getPath().getBaseName() + "->" + hdr.getRootRelativePath().getPathString());
+
+          String namespacedKey = namespace + "/" + hdr.getPath().getBaseName();
+          hmapInfo.addSource(namespacedKey + "->" + hdr.getRootRelativePath().getPathString());
+        }
+    }
+
+    Map<String, String> hdrs_mapping =
+        ruleContext.attributes().get("hdrs_mapping", Type.STRING_DICT);
+    for(Map.Entry<String, String> entry: hdrs_mapping.entrySet()){
+      String key = entry.getKey();
+      String path = entry.getValue();
+      //FIXME: change coding protocol
+      hmapInfo.addSource(key + "->" + path);
+    }
+
+    // Propagate all of the dep sources
+    for (HeaderMapInfoProvider hp : ruleContext.getPrerequisites("deps", Mode.TARGET, HeaderMapInfoProvider.class)) {
+        for (String source : hp.getSources()){
+            hmapInfo.addSource(source);
+        }
+    }
+
+    hmapInfo.setNamespace(namespace);
+    return hmapInfo.build();
   }
 
   public Optional<CompilationArtifacts> getCompilationArtifacts() {

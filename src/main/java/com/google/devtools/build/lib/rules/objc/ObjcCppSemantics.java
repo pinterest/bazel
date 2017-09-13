@@ -136,6 +136,7 @@ public class ObjcCppSemantics implements CppSemantics {
 
   @Override
   public void setupCompilationContext(RuleContext ruleContext, Builder contextBuilder) {
+    System.out.println("SetupObjcSemantics" + ruleContext);
     // The genfiles root of each child configuration must be added to the compile action so that
     // generated headers can be resolved.
     for (PathFragment iquotePath :

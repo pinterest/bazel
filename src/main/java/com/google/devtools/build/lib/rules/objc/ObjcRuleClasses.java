@@ -337,6 +337,7 @@ public class ObjcRuleClasses {
 
   /**
    * Iff a file matches this type, it is considered to use C++.
+   * @jerry FIXME: hdrmap?
    */
   static final FileType CPP_SOURCES = FileType.of(".cc", ".cpp", ".mm", ".cxx", ".C");
 
@@ -492,6 +493,8 @@ public class ObjcRuleClasses {
               .direct_compile_time_input()
               .allowedRuleClasses("objc_bundle", "objc_bundle_library")
               .allowedFileTypes())
+          //TODO: @jerry docs
+          .add(attr("hdrs_mapping", Type.STRING_DICT))
           .build();
     }
     @Override

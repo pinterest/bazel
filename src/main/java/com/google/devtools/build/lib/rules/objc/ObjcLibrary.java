@@ -23,6 +23,7 @@ import com.google.devtools.build.lib.analysis.test.InstrumentedFilesProvider;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.rules.cpp.CcLinkParamsInfo;
+import com.google.devtools.build.lib.rules.cpp.HeaderMapInfoProvider;
 import com.google.devtools.build.lib.rules.objc.ObjcCommon.ResourceAttributes;
 import com.google.devtools.build.lib.syntax.Type;
 import java.util.Map;
@@ -35,6 +36,7 @@ public class ObjcLibrary implements RuleConfiguredTargetFactory {
 
   /**
    * Constructs an {@link ObjcCommon} instance based on the attributes of the given rule context.
+   * @jerry ObjcCommon builds the configured target for ObjcC
    */
   private ObjcCommon common(RuleContext ruleContext) {
     return new ObjcCommon.Builder(ruleContext)
@@ -88,11 +90,14 @@ public class ObjcLibrary implements RuleConfiguredTargetFactory {
     J2ObjcEntryClassProvider j2ObjcEntryClassProvider = new J2ObjcEntryClassProvider.Builder()
       .addTransitive(ruleContext.getPrerequisites("deps", Mode.TARGET,
           J2ObjcEntryClassProvider.class)).build();
+    HeaderMapInfoProvider hmapInfo = common.getHeaderMapInfoProvider(ruleContext);
 
+    // This is actually where the provider is added
     return ObjcRuleClasses.ruleConfiguredTarget(ruleContext, filesToBuild.build())
         .addNativeDeclaredProvider(common.getObjcProvider())
         .addProvider(J2ObjcEntryClassProvider.class, j2ObjcEntryClassProvider)
         .addProvider(J2ObjcMappingFileProvider.class, j2ObjcMappingFileProvider)
+        .addProvider(HeaderMapInfoProvider.class, hmapInfo)
         .addProvider(
             InstrumentedFilesProvider.class,
             compilationSupport.getInstrumentedFilesProvider(common))

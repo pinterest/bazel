@@ -76,6 +76,11 @@ public final class HeaderMapAction extends AbstractFileWriteAction {
     Fingerprint f = new Fingerprint();
     //TODO: ComputeKeys based on headerMap
     f.addString(GUID);
+    for(Map.Entry<String, String> entry: headerMap.entrySet()){
+      String key = entry.getKey();
+      String path = entry.getValue();
+      f.addString(key + "->" + path);
+    }
     return f.hexDigestAndReset();
   }
 }

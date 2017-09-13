@@ -14,9 +14,18 @@
 
 package com.google.devtools.build.lib.rules.cpp;
 
+import com.google.devtools.build.lib.rules.cpp.HeaderMapInfoProvider;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toCollection;
 
+import com.google.devtools.build.lib.util.FileType;
+import com.google.devtools.build.lib.util.FileTypeSet;
+import com.google.devtools.build.lib.packages.Attribute;
+
+import com.google.devtools.build.lib.packages.NativeProvider;
+import com.google.devtools.build.lib.packages.NativeInfo;
+import com.google.devtools.build.lib.packages.Target;
+import com.google.devtools.build.lib.packages.Rule;
 import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Predicate;
@@ -30,6 +39,7 @@ import com.google.common.collect.Sets;
 import com.google.common.collect.Streams;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.analysis.AnalysisUtils;
+import com.google.devtools.build.lib.analysis.ConfiguredTarget;
 import com.google.devtools.build.lib.analysis.FileProvider;
 import com.google.devtools.build.lib.analysis.LanguageDependentFragment;
 import com.google.devtools.build.lib.analysis.OutputGroupProvider;
@@ -56,7 +66,10 @@ import com.google.devtools.build.lib.rules.cpp.Link.LinkTargetType;
 import com.google.devtools.build.lib.rules.cpp.Link.Staticness;
 import com.google.devtools.build.lib.rules.cpp.LinkerInputs.LibraryToLink;
 import com.google.devtools.build.lib.syntax.Type;
+import com.google.devtools.build.lib.syntax.SkylarkNestedSet;
+import com.google.devtools.build.lib.syntax.SkylarkType;
 import com.google.devtools.build.lib.util.FileTypeSet;
+import com.google.devtools.build.lib.util.FileType;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.Preconditions;
 import com.google.devtools.build.lib.vfs.Path;
@@ -1373,12 +1386,15 @@ public final class CcLibraryHelper {
 
     // TODO: Clean this up and have an `experimental` configuration
     // Change synthesized artifacts to a HeaderMap artifact or something
-    List<Artifact> synthisizedArtifacts = new ArrayList<>();
     
     // Add HeaderMaps implicitly
+    List<Artifact> synthisizedArtifacts = new ArrayList<>();
     {
-        // Create output files: a .hmap based on the target name
       String targetName = ruleContext.getTarget().getName();
+      System.out.println("BuildHeaderMapsForTarget:" + targetName);
+      contextBuilder.setHeaderMapNamespace(targetName);
+
+        // Create output files: a .hmap based on the target name
       Root root = ruleContext.getBinOrGenfilesDirectory();
       PathFragment path = PathFragment.create(targetName + ".hmap");
       Artifact out = ruleContext.getPackageRelativeArtifact(path,
@@ -1417,15 +1433,57 @@ public final class CcLibraryHelper {
             inputMap,
             out));
       synthisizedArtifacts.add(out);
+      contextBuilder.addQuoteIncludeDir(out.getExecPath());
     }
 
+    {
+      //TODO: Indent
+      // Add the rule context's header mapping
+      Map<String, String> inputMap = new HashMap();
+      if (ruleContext.attributes().has("hdrs_mapping")) {
+        Map<String, String> hdrs_mapping =
+            ruleContext.attributes().get("hdrs_mapping", Type.STRING_DICT);
+        for(Map.Entry<String, String> entry: hdrs_mapping.entrySet()){
+          String key = entry.getKey();
+          String path = entry.getValue();
+          inputMap.put(key, path);
+        }
+      }
+
+      for (TransitiveInfoCollection dep :deps.stream().collect(toCollection(ArrayList::new))) {
+        HeaderMapInfoProvider hmapProvider = dep.getProvider(HeaderMapInfoProvider.class);
+        if (hmapProvider != null) {
+          // LOL
+          for (String sourceNode : hmapProvider.getSources()) {
+            String[] parts = sourceNode.split("->");
+            inputMap.put(parts[0], parts[1]);
+          }
+        }
+      }
+        
+      String targetName = ruleContext.getTarget().getName();
+      Root root = ruleContext.getBinOrGenfilesDirectory();
+      PathFragment path = PathFragment.create(targetName + "_deps.hmap");
+      Artifact out = ruleContext.getPackageRelativeArtifact(path,
+                ruleContext
+                .getConfiguration()
+                .getGenfilesDirectory(ruleContext.getRule().getRepository()));
+      ruleContext.registerAction(
+        new HeaderMapAction(ruleContext.getActionOwner(),
+            inputMap,
+            out));
+      synthisizedArtifacts.add(out);
+      contextBuilder.addIncludeDir(out.getExecPath());
+    }
+
+    // Note we need an include of -I . after the hmaps
+    contextBuilder.setAdditionalArtifacts(synthisizedArtifacts);
 
     if (featureConfiguration.isEnabled(CppRuleClasses.MODULE_MAPS)) {
       if (cppModuleMap == null) {
         cppModuleMap = CppHelper.createDefaultCppModuleMap(ruleContext, /*suffix=*/ "");
       }
 
-      contextBuilder.setAdditionalArtifacts(synthisizedArtifacts);
       contextBuilder.setPropagateCppModuleMapAsActionInput(propagateModuleMapToCompileAction);
       contextBuilder.setCppModuleMap(cppModuleMap);
       // There are different modes for module compilation:
