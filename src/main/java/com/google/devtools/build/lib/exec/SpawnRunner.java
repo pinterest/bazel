@@ -16,9 +16,11 @@ package com.google.devtools.build.lib.exec;
 import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.actions.InjectionListener;
 import com.google.devtools.build.lib.actions.MetadataProvider;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
+import com.google.devtools.build.lib.actions.cache.MetadataHandler;
 import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import java.io.IOException;
@@ -167,6 +169,9 @@ public interface SpawnRunner {
     // unify the two? Alternatively, maybe the input mapping should (optionally?) contain
     // directories? Or maybe we need a separate method to return the set of directories?
     ArtifactExpander getArtifactExpander();
+
+    /** An injection listener. */
+    InjectionListener getInjectionListener();
 
     /**
      * All implementations must call this method before writing to the provided stdout / stderr or

@@ -21,5 +21,5 @@ import java.io.IOException;
  * associated storage.
  */
 public interface InjectionListener {
-  void onInsert(ActionInput dest, byte[] digest, long size, int backendIndex) throws IOException;
+  void onInsert(Artifact dest, byte[] digest, long size, int backendIndex) throws IOException;
 }

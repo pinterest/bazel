@@ -35,6 +35,7 @@ import com.google.devtools.build.lib.actions.ArtifactPathResolver;
 import com.google.devtools.build.lib.actions.ArtifactSkyKey;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
 import com.google.devtools.build.lib.actions.FilesetOutputSymlink;
+import com.google.devtools.build.lib.actions.InjectionListener;
 import com.google.devtools.build.lib.actions.MissingDepException;
 import com.google.devtools.build.lib.actions.MissingInputFileException;
 import com.google.devtools.build.lib.actions.NotifyOnActionCacheHit;
@@ -429,9 +430,15 @@ public class ActionExecutionFunction implements SkyFunction, CompletionReceiver 
       if (state.discoveredInputs == null) {
         try {
           state.updateFileSystemContext(skyframeActionExecutor, env, metadataHandler);
+          InjectionListener injectionListener;
+          if (state.actionFileSystem instanceof InjectionListener) {
+            injectionListener = (InjectionListener) state.actionFileSystem;
+          } else {
+            injectionListener = metadataHandler::injectRemoteFile;
+          }
           state.discoveredInputs =
               skyframeActionExecutor.discoverInputs(
-                  action, perActionFileCache, metadataHandler, env, state.actionFileSystem);
+                  action, perActionFileCache, metadataHandler, injectionListener, env, state.actionFileSystem);
           Preconditions.checkState(state.discoveredInputs != null,
               "discoverInputs() returned null on action %s", action);
         } catch (MissingDepException e) {
@@ -494,11 +501,18 @@ public class ActionExecutionFunction implements SkyFunction, CompletionReceiver 
       filesetMappings.put(actionInput.getExecPath(), filesetValue.getOutputSymlinks());
     }
 
+    InjectionListener injectionListener;
+    if (state.actionFileSystem instanceof InjectionListener) {
+      injectionListener = (InjectionListener) state.actionFileSystem;
+    } else {
+      injectionListener = metadataHandler::injectRemoteFile;
+    }
     state.updateFileSystemContext(skyframeActionExecutor, env, metadataHandler);
     try (ActionExecutionContext actionExecutionContext =
         skyframeActionExecutor.getContext(
             perActionFileCache,
             metadataHandler,
+            injectionListener,
             Collections.unmodifiableMap(state.expandedArtifacts),
             filesetMappings.build(),
             state.actionFileSystem)) {
@@ -844,6 +858,7 @@ public class ActionExecutionFunction implements SkyFunction, CompletionReceiver 
       if (actionFileSystem != null) {
         executor.updateActionFileSystemContext(
             actionFileSystem, env, metadataHandler::injectOutputData);
+        // maybe register the injectionListener?
       }
     }
 

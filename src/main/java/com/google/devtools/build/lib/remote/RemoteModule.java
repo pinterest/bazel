@@ -36,6 +36,7 @@ import com.google.devtools.build.lib.util.ExitCode;
 import com.google.devtools.build.lib.util.io.AsynchronousFileOutputStream;
 import com.google.devtools.build.lib.vfs.DigestHashFunction;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
+import com.google.devtools.build.lib.vfs.OutputService;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.common.options.OptionsBase;
 import com.google.devtools.common.options.OptionsProvider;
@@ -51,6 +52,7 @@ import java.util.logging.Logger;
 public final class RemoteModule extends BlazeModule {
   private static final Logger logger = Logger.getLogger(RemoteModule.class.getName());
   private AsynchronousFileOutputStream rpcLogFile;
+  private OutputService outputService;
 
   @VisibleForTesting
   static final class CasPathConverter implements PathConverter {
@@ -64,25 +66,24 @@ public final class RemoteModule extends BlazeModule {
     DigestUtil digestUtil;
     PathConverter fallbackConverter = new FileUriPathConverter();
 
+    private String remoteInstanceName() {
+      return options.remoteInstanceName.isEmpty()
+          ? ""
+          : (options.remoteInstanceName + "/");
+    }
+
     @Override
     public String apply(Path path) {
       if (options == null || digestUtil == null || !remoteEnabled(options)) {
         return fallbackConverter.apply(path);
       }
       String server = options.remoteCache;
-      String remoteInstanceName = options.remoteInstanceName;
       try {
         Digest digest = digestUtil.compute(path);
-        return remoteInstanceName.isEmpty()
-            ? String.format(
-                "bytestream://%s/blobs/%s/%d",
+        return String.format(
+                "bytestream://%s%s/blobs/%s/%d",
+                remoteInstanceName(),
                 server,
-                digest.getHash(),
-                digest.getSizeBytes())
-            : String.format(
-                "bytestream://%s/%s/blobs/%s/%d",
-                server,
-                remoteInstanceName,
                 digest.getHash(),
                 digest.getSizeBytes());
       } catch (IOException e) {
@@ -202,6 +203,20 @@ public final class RemoteModule extends BlazeModule {
         cache = null;
       }
 
+      if (remoteOptions.experimentalRemoteOutputService) {
+        outputService = new RemoteOutputService(
+            env::getExecRoot,
+            env.getOutputBase().getFileSystem(),
+            (locationIndex) -> {
+              if (locationIndex == 1) {
+                return cache;
+              }
+              return null;
+            });
+      } else {
+        outputService = null;
+      }
+
       final GrpcRemoteExecutor executor;
       if (remoteOptions.remoteExecutor != null) {
         Channel ch = GoogleAuthUtils.newChannel(remoteOptions.remoteExecutor, authAndTlsOptions);
@@ -263,5 +278,9 @@ public final class RemoteModule extends BlazeModule {
   public static boolean remoteEnabled(RemoteOptions options) {
     return SimpleBlobStoreFactory.isRemoteCacheOptions(options)
         || GrpcRemoteCache.isRemoteCacheOptions(options);
+  }
+
+  public OutputService getOutputService() throws AbruptExitException {
+    return outputService;
   }
 }

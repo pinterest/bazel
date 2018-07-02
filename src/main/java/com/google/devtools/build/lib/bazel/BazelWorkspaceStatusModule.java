@@ -238,6 +238,7 @@ public class BazelWorkspaceStatusModule extends BlazeModule {
         FileSystemUtils.writeContent(
             actionExecutionContext.getInputPath(volatileStatus), printStatusMap(volatileMap));
       } catch (IOException e) {
+        e.printStackTrace();
         throw new ActionExecutionException(
             "Failed to run workspace status command " + options.workspaceStatusCommand,
             e,

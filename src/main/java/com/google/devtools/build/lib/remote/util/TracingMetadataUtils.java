@@ -61,6 +61,10 @@ public class TracingMetadataUtils {
                     .setToolName("bazel")
                     .setToolVersion(BlazeVersionInfo.instance().getVersion()))
             .build();
+    return contextWithMetadata(metadata);
+  }
+
+  public static Context contextWithMetadata(RequestMetadata metadata) {
     return Context.current().withValue(CONTEXT_KEY, metadata);
   }
 

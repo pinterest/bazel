@@ -375,7 +375,7 @@ public abstract class FileArtifactValue implements SkyValue {
     @Override
     public long getModifiedTime() {
       throw new UnsupportedOperationException(
-          "RemoteFileArifactValue doesn't support getModifiedTime");
+          "RemoteFileArtifactValue doesn't support getModifiedTime");
     }
 
     @Override

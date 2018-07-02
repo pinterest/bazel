@@ -42,7 +42,7 @@ public interface OutputService {
   /**
    * @return the name of filesystem, akin to what you might see in /proc/mounts
    */
-  String getFilesSystemName();
+  String getFileSystemName();
 
   /**
    * Start the build.

@@ -228,4 +228,17 @@ public final class RemoteOptions extends OptionsBase {
             + "otherwise cachable actions that output symlinks will fail."
   )
   public boolean allowSymlinkUpload;
+
+  @Option(
+    name = "experimental_remote_output_service",
+    defaultValue = "false",
+    category = "remote",
+    documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+    effectTags = {OptionEffectTag.EXECUTION},
+    help =
+        "If true, an output service is used which presents artifact "
+            + "metadata as inputs and only downloads outputs when the "
+            + "service must resolve paths or finalize action outputs."
+  )
+  public boolean experimentalRemoteOutputService;
 }

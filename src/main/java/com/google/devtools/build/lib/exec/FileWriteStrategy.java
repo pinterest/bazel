@@ -60,6 +60,7 @@ public final class FileWriteStrategy implements FileWriteActionContext {
           outputPath.setExecutable(true);
         }
       } catch (IOException e) {
+        e.printStackTrace();
         throw new EnvironmentalExecException("failed to create file '"
             + Iterables.getOnlyElement(action.getOutputs()).prettyPrint()
             + "' due to I/O error: " + e.getMessage(), e);

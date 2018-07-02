@@ -631,7 +631,7 @@ public final class CommandEnvironment {
     if (getOutputService() != null) {
       try (SilentCloseable c =
           Profiler.instance().profile(ProfilerTask.INFO, "Finding output file system")) {
-        return getOutputService().getFilesSystemName();
+        return getOutputService().getFileSystemName();
       }
     }
     return workspace.getOutputBaseFilesystemTypeName();

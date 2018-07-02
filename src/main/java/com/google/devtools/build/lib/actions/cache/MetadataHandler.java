@@ -17,7 +17,7 @@ import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.TreeFileArtifact;
 import com.google.devtools.build.lib.actions.FileArtifactValue;
-import com.google.devtools.build.lib.vfs.FileStatus;
+import com.google.devtools.build.lib.vfs.FileStatusWithDigest;
 import java.io.IOException;
 
 /**
@@ -59,7 +59,7 @@ public interface MetadataHandler {
    *
    * <p>Must only be called after a call to {@link #discardOutputMetadata}.
    */
-  void injectDigest(ActionInput output, FileStatus statNoFollow, byte[] digest);
+  void injectDigest(ActionInput output, FileStatusWithDigest statNoFollow);
 
   /** Injects a file that is only stored remotely. */
   void injectRemoteFile(Artifact output, byte[] digest, long size, int locationIndex);
