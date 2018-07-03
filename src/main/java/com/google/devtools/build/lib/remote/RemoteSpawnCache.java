@@ -43,6 +43,7 @@ import io.grpc.Context;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.SortedMap;
@@ -122,9 +123,11 @@ final class RemoteSpawnCache implements SpawnCache {
         ActionResult result = remoteCache.getCachedActionResult(actionKey);
         if (result != null) {
           // We don't cache failed actions, so we know the outputs exist.
-          // For now, download all outputs locally; in the future, we can reuse the digests to
           // just update the TreeNodeRepository and continue the build.
-          remoteCache.download(result, execRoot, context.getFileOutErr());
+          RemoteSpawnRunner.injectRemoteResults(
+              result,
+              spawn.getOutputFiles(),
+              context.getInjectionListener());
           SpawnResult spawnResult =
               new SpawnResult.Builder()
                   .setStatus(Status.SUCCESS)
@@ -180,10 +183,10 @@ final class RemoteSpawnCache implements SpawnCache {
                   && Status.SUCCESS.equals(result.status())
                   && result.exitCode() == 0;
           Context previous = withMetadata.attach();
-          Collection<Path> files =
+          Map<Path, ? extends ActionInput> files =
               RemoteSpawnRunner.resolveActionInputs(execRoot, spawn.getOutputFiles());
           try {
-            remoteCache.upload(actionKey, execRoot, files, context.getFileOutErr(), uploadAction);
+            remoteCache.upload(actionKey, execRoot, files, context.getFileOutErr(), uploadAction, context.getInjectionListener());
           } catch (IOException e) {
             String errorMsg = e.getMessage();
             if (isNullOrEmpty(errorMsg)) {

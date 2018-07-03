@@ -26,7 +26,9 @@ import com.google.common.hash.HashingOutputStream;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
 import com.google.devtools.build.lib.actions.ActionInput;
+import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.actions.InjectionListener;
 import com.google.devtools.build.lib.actions.MetadataProvider;
 import com.google.devtools.build.lib.concurrent.ThreadSafety.ThreadSafe;
 import com.google.devtools.build.lib.remote.Retrier.RetryException;
@@ -234,12 +236,13 @@ public class GrpcRemoteCache extends AbstractRemoteActionCache {
   public void upload(
       ActionKey actionKey,
       Path execRoot,
-      Collection<Path> files,
+      Map<Path, ? extends ActionInput> files,
       FileOutErr outErr,
-      boolean uploadAction)
+      boolean uploadAction,
+      InjectionListener injectionListener)
       throws ExecException, IOException, InterruptedException {
     ActionResult.Builder result = ActionResult.newBuilder();
-    upload(execRoot, files, outErr, result);
+    upload(execRoot, files, outErr, result, injectionListener);
     if (!uploadAction) {
       return;
     }
@@ -262,11 +265,25 @@ public class GrpcRemoteCache extends AbstractRemoteActionCache {
     }
   }
 
-  void upload(Path execRoot, Collection<Path> files, FileOutErr outErr, ActionResult.Builder result)
+  void upload(Path execRoot, Map<Path, ? extends ActionInput> files, FileOutErr outErr, ActionResult.Builder result, InjectionListener injectionListener)
       throws ExecException, IOException, InterruptedException {
     UploadManifest manifest =
         new UploadManifest(digestUtil, result, execRoot, options.allowSymlinkUpload);
-    manifest.addFiles(files);
+    manifest.addFiles(files.keySet());
+
+    Map<Path, Digest> fileToDigest = manifest.getFileToDigest();
+    for (Map.Entry<Path, ? extends ActionInput> entry : files.entrySet()) {
+      ActionInput output = entry.getValue();
+      if (output instanceof Artifact) {
+        final Artifact artifact = (Artifact) output;
+        Digest digest = fileToDigest.get(entry.getKey());
+        injectionListener.onInsert(
+            artifact,
+            OutputFileStatusWithDigest.parseDigest(digest),
+            digest.getSizeBytes(),
+            1); // and it shall be so
+      }
+    }
 
     List<Chunker> filesToUpload = new ArrayList<>();
 

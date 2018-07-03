@@ -178,11 +178,11 @@ class RemoteSpawnRunner implements SpawnRunner {
                     + actionKey.getDigest());
           }
           // TODO(bazel-team): Provide a way for actions to register empty TreeArtifacts.
+          System.out.println("WTFZOMGWHEREAREWE");
           injectRemoteResults(
               cachedResult,
               spawn.getOutputFiles(),
-              context.getInjectionListener(),
-              context.getFileOutErr());
+              context.getInjectionListener());
           /*
           try {
             return downloadRemoteResults(cachedResult, context.getFileOutErr())
@@ -237,8 +237,7 @@ class RemoteSpawnRunner implements SpawnRunner {
       injectRemoteResults(
           result,
           spawn.getOutputFiles(),
-          context.getInjectionListener(),
-          context.getFileOutErr());
+          context.getInjectionListener());
       /*
       try {
         return downloadRemoteResults(result, context.getFileOutErr())
@@ -306,11 +305,10 @@ class RemoteSpawnRunner implements SpawnRunner {
     }
   }
 
-  private void injectRemoteResults(
+  public static void injectRemoteResults(
       ActionResult result,
       Collection<? extends ActionInput> outputs,
-      InjectionListener injectionListener,
-      FileOutErr outErr) throws IOException {
+      InjectionListener injectionListener) throws IOException {
     Map<String, OutputFile> outputFiles = Maps.uniqueIndex(result.getOutputFilesList(), (outputFile) -> outputFile.getPath());
     for (ActionInput output : outputs) {
       if (output instanceof Artifact) {
@@ -530,9 +528,9 @@ class RemoteSpawnRunner implements SpawnRunner {
         Spawns.mayBeCached(spawn)
             && Status.SUCCESS.equals(result.status())
             && result.exitCode() == 0;
-    Collection<Path> outputFiles = resolveActionInputs(execRoot, spawn.getOutputFiles());
+    Map<Path, ? extends ActionInput> outputFiles = resolveActionInputs(execRoot, spawn.getOutputFiles());
     try {
-      remoteCache.upload(actionKey, execRoot, outputFiles, context.getFileOutErr(), uploadAction);
+      remoteCache.upload(actionKey, execRoot, outputFiles, context.getFileOutErr(), uploadAction, context.getInjectionListener());
     } catch (IOException e) {
       if (verboseFailures) {
         report(Event.debug("Upload to remote cache failed: " + e.getMessage()));
@@ -556,11 +554,8 @@ class RemoteSpawnRunner implements SpawnRunner {
   }
 
   /** Resolve a collection of {@link com.google.build.lib.actions.ActionInput}s to {@link Path}s. */
-  static Collection<Path> resolveActionInputs(
+  static Map<Path, ? extends ActionInput> resolveActionInputs(
       Path execRoot, Collection<? extends ActionInput> actionInputs) {
-    return actionInputs
-        .stream()
-        .map((inp) -> execRoot.getRelative(inp.getExecPath()))
-        .collect(ImmutableList.toImmutableList());
+    return Maps.uniqueIndex(actionInputs, (inp) -> execRoot.getRelative(inp.getExecPath()));
   }
 }

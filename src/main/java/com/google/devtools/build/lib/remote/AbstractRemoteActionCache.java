@@ -21,8 +21,10 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.actions.InjectionListener;
 import com.google.devtools.build.lib.actions.UserExecException;
 import com.google.devtools.build.lib.concurrent.ThreadSafety;
 import com.google.devtools.build.lib.remote.TreeNodeRepository.TreeNode;
@@ -117,9 +119,10 @@ public abstract class AbstractRemoteActionCache implements AutoCloseable {
   abstract void upload(
       DigestUtil.ActionKey actionKey,
       Path execRoot,
-      Collection<Path> files,
+      Map<Path, ? extends ActionInput> files,
       FileOutErr outErr,
-      boolean uploadAction)
+      boolean uploadAction,
+      InjectionListener injectionListener)
       throws ExecException, IOException, InterruptedException;
 
   /**
@@ -418,6 +421,7 @@ public abstract class AbstractRemoteActionCache implements AutoCloseable {
     private final Path execRoot;
     private final boolean allowSymlinks;
     private final Map<Digest, Path> digestToFile;
+    private final Map<Path, Digest> fileToDigest;
     private final Map<Digest, Chunker> digestToChunkers;
 
     /**
@@ -432,6 +436,7 @@ public abstract class AbstractRemoteActionCache implements AutoCloseable {
       this.allowSymlinks = allowSymlinks;
 
       this.digestToFile = new HashMap<>();
+      this.fileToDigest = new HashMap<>();
       this.digestToChunkers = new HashMap<>();
     }
 
@@ -471,6 +476,11 @@ public abstract class AbstractRemoteActionCache implements AutoCloseable {
       return digestToFile;
     }
 
+    /** Map of file paths to digests to upload. */
+    public Map<Path, Digest> getFileToDigest() {
+      return fileToDigest;
+    }
+
     /**
      * Map of digests to chunkers to upload. When the file is a regular, non-directory file it is
      * transmitted through {@link #getDigestToFile()}. When it is a directory, it is transmitted as
@@ -488,6 +498,7 @@ public abstract class AbstractRemoteActionCache implements AutoCloseable {
           .setIsExecutable(file.isExecutable());
 
       digestToFile.put(digest, file);
+      fileToDigest.put(file, digest);
     }
 
     private void addDirectory(Path dir) throws ExecException, IOException {

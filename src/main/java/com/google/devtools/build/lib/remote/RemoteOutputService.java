@@ -155,7 +155,7 @@ class RemoteOutputService implements OutputService {
    */
   @Override
   public void clean() throws ExecException, InterruptedException {
-    throw new UnsupportedOperationException();
+    // throw new UnsupportedOperationException();
   }
 
   /** @return true iff the file actually lives on a remote server */
