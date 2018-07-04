@@ -36,6 +36,7 @@ import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.CommandLines.ParamFileActionInput;
 import com.google.devtools.build.lib.actions.EnvironmentalExecException;
 import com.google.devtools.build.lib.actions.ExecutionRequirements;
+import com.google.devtools.build.lib.actions.InjectionListener;
 import com.google.devtools.build.lib.actions.MetadataProvider;
 import com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType;
 import com.google.devtools.build.lib.actions.ResourceSet;
@@ -78,6 +79,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collection;
+import java.util.Map;
 import java.util.SortedMap;
 import org.junit.Before;
 import org.junit.Test;
@@ -185,9 +187,10 @@ public class RemoteSpawnRunnerTest {
         .upload(
             any(ActionKey.class),
             any(Path.class),
-            any(Collection.class),
+            any(Map.class),
             any(FileOutErr.class),
-            any(Boolean.class));
+            any(Boolean.class),
+            any(InjectionListener.class));
     verifyZeroInteractions(localRunner);
   }
 
@@ -241,9 +244,10 @@ public class RemoteSpawnRunnerTest {
         .upload(
             any(ActionKey.class),
             any(Path.class),
-            any(Collection.class),
+            any(Map.class),
             any(FileOutErr.class),
-            eq(false));
+            eq(false),
+            any(InjectionListener.class));
   }
 
   @Test
@@ -288,9 +292,10 @@ public class RemoteSpawnRunnerTest {
         .upload(
             any(ActionKey.class),
             any(Path.class),
-            any(Collection.class),
+            any(Map.class),
             any(FileOutErr.class),
-            eq(false));
+            eq(false),
+            any(InjectionListener.class));
   }
 
   @Test
@@ -368,9 +373,10 @@ public class RemoteSpawnRunnerTest {
         .upload(
             any(ActionKey.class),
             any(Path.class),
-            any(Collection.class),
+            any(Map.class),
             any(FileOutErr.class),
-            eq(true));
+            eq(true),
+            any(InjectionListener.class));
 
     SpawnResult res =
         new SpawnResult.Builder()
@@ -1028,6 +1034,11 @@ public class RemoteSpawnRunnerTest {
     @Override
     public MetadataProvider getMetadataProvider() {
       return fakeFileCache;
+    }
+
+    @Override
+    public InjectionListener getInjectionListener() {
+      return (dest, digest, size, backendIndex) -> {};
     }
 
     @Override

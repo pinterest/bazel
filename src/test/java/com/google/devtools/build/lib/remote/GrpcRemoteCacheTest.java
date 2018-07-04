@@ -30,6 +30,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListeningScheduledExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputHelper;
 import com.google.devtools.build.lib.authandtls.AuthAndTLSOptions;
 import com.google.devtools.build.lib.authandtls.GoogleAuthUtils;
@@ -514,13 +515,15 @@ public class GrpcRemoteCacheTest {
   @Test
   public void testUploadDirectory() throws Exception {
     final GrpcRemoteCache client = newClient();
+    final ActionInput fooActionInput = ActionInputHelper.fromPath("a/foo");
     final Digest fooDigest =
-        fakeFileCache.createScratchInput(ActionInputHelper.fromPath("a/foo"), "xyz");
+        fakeFileCache.createScratchInput(fooActionInput, "xyz");
     final Digest quxDigest =
         fakeFileCache.createScratchInput(ActionInputHelper.fromPath("bar/qux"), "abc");
+    final ActionInput barActionInput = ActionInputHelper.fromPath("bar");
     final Digest barDigest =
         fakeFileCache.createScratchInputDirectory(
-            ActionInputHelper.fromPath("bar"),
+            barActionInput,
             Tree.newBuilder()
                 .setRoot(
                     Directory.newBuilder()
@@ -551,7 +554,7 @@ public class GrpcRemoteCacheTest {
         });
 
     ActionResult.Builder result = ActionResult.newBuilder();
-    client.upload(execRoot, ImmutableList.<Path>of(fooFile, barDir), outErr, result);
+    client.upload(execRoot, ImmutableMap.<Path, ActionInput>of(fooFile, fooActionInput, barDir, barActionInput), outErr, result, (dest, digest, size, backendIndex) -> {});
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
@@ -561,9 +564,10 @@ public class GrpcRemoteCacheTest {
   @Test
   public void testUploadDirectoryEmpty() throws Exception {
     final GrpcRemoteCache client = newClient();
+    final ActionInput barActionInput = ActionInputHelper.fromPath("bar");
     final Digest barDigest =
         fakeFileCache.createScratchInputDirectory(
-            ActionInputHelper.fromPath("bar"),
+            barActionInput,
             Tree.newBuilder().setRoot(Directory.newBuilder().build()).build());
     final Path barDir = execRoot.getRelative("bar");
     serviceRegistry.addService(
@@ -580,7 +584,7 @@ public class GrpcRemoteCacheTest {
         });
 
     ActionResult.Builder result = ActionResult.newBuilder();
-    client.upload(execRoot, ImmutableList.<Path>of(barDir), outErr, result);
+    client.upload(execRoot, ImmutableMap.<Path, ActionInput>of(barDir, barActionInput), outErr, result, (dest, digest, size, backendIndex) -> {});
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
     assertThat(result.build()).isEqualTo(expectedResult.build());
@@ -611,8 +615,9 @@ public class GrpcRemoteCacheTest {
                         DirectoryNode.newBuilder().setName("test").setDigest(testDigest)))
             .addChildren(testDirMessage)
             .build();
+    final ActionInput barActionInput = ActionInputHelper.fromPath("bar");
     final Digest barDigest =
-        fakeFileCache.createScratchInputDirectory(ActionInputHelper.fromPath("bar"), barTree);
+        fakeFileCache.createScratchInputDirectory(barActionInput, barTree);
     final Path quxFile = execRoot.getRelative("bar/qux");
     quxFile.setExecutable(true);
     final Path barDir = execRoot.getRelative("bar");
@@ -631,7 +636,7 @@ public class GrpcRemoteCacheTest {
         });
 
     ActionResult.Builder result = ActionResult.newBuilder();
-    client.upload(execRoot, ImmutableList.<Path>of(barDir), outErr, result);
+    client.upload(execRoot, ImmutableMap.<Path, ActionInput>of(barDir, barActionInput), outErr, result, (dest, digest, size, backendIndex) -> {});
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
     assertThat(result.build()).isEqualTo(expectedResult.build());
@@ -640,10 +645,12 @@ public class GrpcRemoteCacheTest {
   @Test
   public void testUploadCacheHits() throws Exception {
     final GrpcRemoteCache client = newClient();
+    final ActionInput fooActionInput = ActionInputHelper.fromPath("a/foo");
+    final ActionInput barActionInput = ActionInputHelper.fromPath("bar");
     final Digest fooDigest =
-        fakeFileCache.createScratchInput(ActionInputHelper.fromPath("a/foo"), "xyz");
+        fakeFileCache.createScratchInput(fooActionInput, "xyz");
     final Digest barDigest =
-        fakeFileCache.createScratchInput(ActionInputHelper.fromPath("bar"), "x");
+        fakeFileCache.createScratchInput(barActionInput, "x");
     final Path fooFile = execRoot.getRelative("a/foo");
     final Path barFile = execRoot.getRelative("bar");
     barFile.setExecutable(true);
@@ -661,7 +668,7 @@ public class GrpcRemoteCacheTest {
         });
 
     ActionResult.Builder result = ActionResult.newBuilder();
-    client.upload(execRoot, ImmutableList.<Path>of(fooFile, barFile), outErr, result);
+    client.upload(execRoot, ImmutableMap.<Path, ActionInput>of(fooFile, fooActionInput, barFile, barActionInput), outErr, result, (dest, digest, size, backendIndex) -> {});
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
     expectedResult
@@ -675,10 +682,12 @@ public class GrpcRemoteCacheTest {
   @Test
   public void testUploadUploadsOnlyOutputs() throws Exception {
     final GrpcRemoteCache client = newClient();
+    final ActionInput fooActionInput = ActionInputHelper.fromPath("a/foo");
+    final ActionInput barActionInput = ActionInputHelper.fromPath("bar");
     final Digest fooDigest =
-        fakeFileCache.createScratchInput(ActionInputHelper.fromPath("a/foo"), "xyz");
+        fakeFileCache.createScratchInput(fooActionInput, "xyz");
     final Digest barDigest =
-        fakeFileCache.createScratchInput(ActionInputHelper.fromPath("bar"), "x");
+        fakeFileCache.createScratchInput(barActionInput, "x");
     serviceRegistry.addService(
         new ContentAddressableStorageImplBase() {
           @Override
@@ -703,18 +712,18 @@ public class GrpcRemoteCacheTest {
     ActionKey emptyKey = DIGEST_UTIL.computeActionKey(Action.getDefaultInstance());
     Path fooFile = execRoot.getRelative("a/foo");
     Path barFile = execRoot.getRelative("bar");
-    client.upload(emptyKey, execRoot, ImmutableList.<Path>of(fooFile, barFile), outErr, false);
+    client.upload(emptyKey, execRoot, ImmutableMap.<Path, ActionInput>of(fooFile, fooActionInput, barFile, barActionInput), outErr, false, (dest, digest, size, backendIndex) -> {});
   }
 
   @Test
   public void testUploadCacheMissesWithRetries() throws Exception {
     final GrpcRemoteCache client = newClient();
-    final Digest fooDigest =
-        fakeFileCache.createScratchInput(ActionInputHelper.fromPath("a/foo"), "xyz");
-    final Digest barDigest =
-        fakeFileCache.createScratchInput(ActionInputHelper.fromPath("bar"), "x");
-    final Digest bazDigest =
-        fakeFileCache.createScratchInput(ActionInputHelper.fromPath("baz"), "z");
+    final ActionInput fooActionInput = ActionInputHelper.fromPath("a/foo");
+    final ActionInput barActionInput = ActionInputHelper.fromPath("bar");
+    final ActionInput bazActionInput = ActionInputHelper.fromPath("baz");
+    final Digest fooDigest = fakeFileCache.createScratchInput(fooActionInput, "xyz");
+    final Digest barDigest = fakeFileCache.createScratchInput(barActionInput, "x");
+    final Digest bazDigest = fakeFileCache.createScratchInput(bazActionInput, "z");
     final Path fooFile = execRoot.getRelative("a/foo");
     final Path barFile = execRoot.getRelative("bar");
     final Path bazFile = execRoot.getRelative("baz");
@@ -821,7 +830,7 @@ public class GrpcRemoteCacheTest {
               }
             });
     client.upload(
-        actionKey, execRoot, ImmutableList.<Path>of(fooFile, barFile, bazFile), outErr, true);
+        actionKey, execRoot, ImmutableMap.<Path, ActionInput>of(fooFile, fooActionInput, barFile, barActionInput, bazFile, bazActionInput), outErr, true, (dest, digest, size, backendIndex) -> {});
     // 4 times for the errors, 3 times for the successful uploads.
     Mockito.verify(mockByteStreamImpl, Mockito.times(7))
         .write(Mockito.<StreamObserver<WriteResponse>>anyObject());

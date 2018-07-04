@@ -29,6 +29,7 @@ import com.google.devtools.build.lib.actions.ActionInputHelper;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.ExecutionRequirements;
+import com.google.devtools.build.lib.actions.InjectionListener;
 import com.google.devtools.build.lib.actions.MetadataProvider;
 import com.google.devtools.build.lib.actions.ResourceSet;
 import com.google.devtools.build.lib.actions.SimpleSpawn;
@@ -65,6 +66,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.SortedMap;
 import org.junit.Before;
 import org.junit.Test;
@@ -125,6 +127,11 @@ public class RemoteSpawnCacheTest {
         @Override
         public MetadataProvider getMetadataProvider() {
           return fakeFileCache;
+        }
+
+        @Override
+        public InjectionListener getInjectionListener() {
+          return (dest, digest, size, backendIndex) -> {};
         }
 
         @Override
@@ -236,9 +243,10 @@ public class RemoteSpawnCacheTest {
         .upload(
             any(ActionKey.class),
             any(Path.class),
-            any(Collection.class),
+            any(Map.class),
             any(FileOutErr.class),
-            any(Boolean.class));
+            any(Boolean.class),
+            any(InjectionListener.class));
     assertThat(result.setupSuccess()).isTrue();
     assertThat(result.exitCode()).isEqualTo(0);
     assertThat(result.isCacheHit()).isTrue();
@@ -259,7 +267,7 @@ public class RemoteSpawnCacheTest {
             .setStatus(Status.SUCCESS)
             .setRunnerName("test")
             .build();
-    ImmutableList<Path> outputFiles = ImmutableList.of(fs.getPath("/random/file"));
+    ImmutableMap<Path, ActionInput> outputFiles = ImmutableMap.of(fs.getPath("/random/file"), ActionInputHelper.fromPath("/random/file"));
     Mockito.doAnswer(
             new Answer<Void>() {
               @Override
@@ -271,10 +279,10 @@ public class RemoteSpawnCacheTest {
               }
             })
         .when(remoteCache)
-        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(true));
+        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(true), any(InjectionListener.class));
     entry.store(result);
     verify(remoteCache)
-        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(true));
+        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(true), any(InjectionListener.class));
     assertThat(progressUpdates)
         .containsExactly(Pair.of(ProgressStatus.CHECKING_CACHE, "remote-cache"));
   }
@@ -304,9 +312,9 @@ public class RemoteSpawnCacheTest {
             .setRunnerName("test")
             .build();
     entry.store(result);
-    ImmutableList<Path> outputFiles = ImmutableList.of(fs.getPath("/random/file"));
+    ImmutableMap<Path, ActionInput> outputFiles = ImmutableMap.of(fs.getPath("/random/file"), ActionInputHelper.fromPath("/random/file"));
     verify(remoteCache)
-        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(false));
+        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(false), any(InjectionListener.class));
     assertThat(progressUpdates).containsExactly();
   }
 
@@ -323,10 +331,10 @@ public class RemoteSpawnCacheTest {
             .setStatus(Status.NON_ZERO_EXIT)
             .setRunnerName("test")
             .build();
-    ImmutableList<Path> outputFiles = ImmutableList.of(fs.getPath("/random/file"));
+    ImmutableMap<Path, ActionInput> outputFiles = ImmutableMap.of(fs.getPath("/random/file"), ActionInputHelper.fromPath("/random/file"));
     entry.store(result);
     verify(remoteCache)
-        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(false));
+        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(false), any(InjectionListener.class));
     assertThat(progressUpdates)
         .containsExactly(Pair.of(ProgressStatus.CHECKING_CACHE, "remote-cache"));
   }
@@ -341,15 +349,15 @@ public class RemoteSpawnCacheTest {
             .setStatus(Status.SUCCESS)
             .setRunnerName("test")
             .build();
-    ImmutableList<Path> outputFiles = ImmutableList.of(fs.getPath("/random/file"));
+    ImmutableMap<Path, ActionInput> outputFiles = ImmutableMap.of(fs.getPath("/random/file"), ActionInputHelper.fromPath("/random/file"));
 
     doThrow(new IOException("cache down"))
         .when(remoteCache)
-        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(true));
+        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(true), any(InjectionListener.class));
 
     entry.store(result);
     verify(remoteCache)
-        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(true));
+        .upload(any(ActionKey.class), any(Path.class), eq(outputFiles), eq(outErr), eq(true), any(InjectionListener.class));
 
     assertThat(eventHandler.getEvents()).hasSize(1);
     Event evt = eventHandler.getEvents().get(0);

@@ -33,6 +33,7 @@ import com.google.devtools.build.lib.actions.ActionInputHelper;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.Artifact.ArtifactExpander;
 import com.google.devtools.build.lib.actions.ExecException;
+import com.google.devtools.build.lib.actions.InjectionListener;
 import com.google.devtools.build.lib.actions.MetadataProvider;
 import com.google.devtools.build.lib.actions.ResourceSet;
 import com.google.devtools.build.lib.actions.SimpleSpawn;
@@ -160,6 +161,11 @@ public class GrpcRemoteExecutionClientTest {
         @Override
         public MetadataProvider getMetadataProvider() {
           return fakeFileCache;
+        }
+
+        @Override
+        public InjectionListener getInjectionListener() {
+          return (dest, digest, size, backendIndex) -> {};
         }
 
         @Override

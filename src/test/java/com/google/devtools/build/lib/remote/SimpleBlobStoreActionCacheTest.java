@@ -18,9 +18,10 @@ import static com.google.devtools.build.lib.remote.util.Utils.getFromFuture;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.common.base.Charsets;
-import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListeningScheduledExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.devtools.build.lib.actions.ActionInput;
 import com.google.devtools.build.lib.actions.ActionInputHelper;
 import com.google.devtools.build.lib.clock.JavaClock;
 import com.google.devtools.build.lib.remote.Retrier.Backoff;
@@ -331,15 +332,21 @@ public class SimpleBlobStoreActionCacheTest {
                         .build())
                 .build());
     final Path fooFile = execRoot.getRelative("a/foo");
+    final ActionInput fooActionInput = ActionInputHelper.fromPath("a/foo");
     final Path quxFile = execRoot.getRelative("bar/qux");
     quxFile.setExecutable(true);
     final Path barDir = execRoot.getRelative("bar");
+    final ActionInput barActionInput = ActionInputHelper.fromPath("bar");
 
     final ConcurrentMap<String, byte[]> map = new ConcurrentHashMap<>();
     final SimpleBlobStoreActionCache client = newClient(map);
 
     ActionResult.Builder result = ActionResult.newBuilder();
-    client.upload(result, execRoot, ImmutableList.<Path>of(fooFile, barDir));
+    client.upload(
+        result,
+        execRoot,
+        ImmutableMap.<Path, ActionInput>of(fooFile, fooActionInput, barDir, barActionInput),
+        (dest, digest, size, backendIndex) -> {});
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.addOutputFilesBuilder().setPath("a/foo").setDigest(fooDigest);
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
@@ -351,9 +358,10 @@ public class SimpleBlobStoreActionCacheTest {
 
   @Test
   public void testUploadDirectoryEmpty() throws Exception {
+    final ActionInput barActionInput = ActionInputHelper.fromPath("bar");
     final Digest barDigest =
         fakeFileCache.createScratchInputDirectory(
-            ActionInputHelper.fromPath("bar"),
+            barActionInput,
             Tree.newBuilder().setRoot(Directory.newBuilder().build()).build());
     final Path barDir = execRoot.getRelative("bar");
 
@@ -361,7 +369,11 @@ public class SimpleBlobStoreActionCacheTest {
     final SimpleBlobStoreActionCache client = newClient(map);
 
     ActionResult.Builder result = ActionResult.newBuilder();
-    client.upload(result, execRoot, ImmutableList.<Path>of(barDir));
+    client.upload(
+        result,
+        execRoot,
+        ImmutableMap.<Path, ActionInput>of(barDir, barActionInput),
+        (dest, digest, size, backendIndex) -> {});
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
     assertThat(result.build()).isEqualTo(expectedResult.build());
@@ -393,8 +405,9 @@ public class SimpleBlobStoreActionCacheTest {
                         DirectoryNode.newBuilder().setName("test").setDigest(testDigest)))
             .addChildren(testDirMessage)
             .build();
+    final ActionInput barActionInput = ActionInputHelper.fromPath("bar");
     final Digest barDigest =
-        fakeFileCache.createScratchInputDirectory(ActionInputHelper.fromPath("bar"), barTree);
+        fakeFileCache.createScratchInputDirectory(barActionInput, barTree);
 
     final ConcurrentMap<String, byte[]> map = new ConcurrentHashMap<>();
     final SimpleBlobStoreActionCache client = newClient(map);
@@ -404,7 +417,11 @@ public class SimpleBlobStoreActionCacheTest {
     final Path barDir = execRoot.getRelative("bar");
 
     ActionResult.Builder result = ActionResult.newBuilder();
-    client.upload(result, execRoot, ImmutableList.<Path>of(barDir));
+    client.upload(
+        result,
+        execRoot,
+        ImmutableMap.<Path, ActionInput>of(barDir, barActionInput),
+        (dest, digest, size, backendIndex) -> {});
     ActionResult.Builder expectedResult = ActionResult.newBuilder();
     expectedResult.addOutputDirectoriesBuilder().setPath("bar").setTreeDigest(barDigest);
     assertThat(result.build()).isEqualTo(expectedResult.build());
