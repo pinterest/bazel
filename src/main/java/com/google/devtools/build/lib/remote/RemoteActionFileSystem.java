@@ -14,6 +14,7 @@
 
 package com.google.devtools.build.lib.remote;
 
+import java.io.FileOutputStream;
 import com.google.common.base.Preconditions;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
@@ -261,7 +262,8 @@ class RemoteActionFileSystem extends AbstractFileSystemWithCustomStat implements
    */
   @Override
   public boolean createDirectory(Path path) throws IOException {
-    throw new UnsupportedOperationException();
+    // System.out.println("RemoteActionFileSystem.createDirectory");
+    return writeDelegate.createDirectory(path);
   }
 
   /**
@@ -270,7 +272,8 @@ class RemoteActionFileSystem extends AbstractFileSystemWithCustomStat implements
    */
   @Override
   public void createDirectoryAndParents(Path path) throws IOException {
-    throw new UnsupportedOperationException();
+    // System.out.println("RemoteActionFileSystem.createDirectoryAndParents");
+    writeDelegate.createDirectoryAndParents(path);
   }
 
   @Override
@@ -281,7 +284,9 @@ class RemoteActionFileSystem extends AbstractFileSystemWithCustomStat implements
   /** Deletes the file denoted by {@code path}. See {@link Path#delete} for specification. */
   @Override
   public boolean delete(Path path) throws IOException {
-    throw new UnsupportedOperationException();
+    // throw new UnsupportedOperationException();
+    // System.out.println("RemoteActionFileSystem.delete: " + path);
+    return writeDelegate.delete(path);
   }
 
   /**
@@ -378,6 +383,7 @@ class RemoteActionFileSystem extends AbstractFileSystemWithCustomStat implements
   @Override
   protected void createSymbolicLink(Path linkPath, PathFragment targetFragment)
       throws IOException {
+    System.out.println("RemoteActionFileSystem.createSymbolicLink");
     throw new UnsupportedOperationException();
   }
 
@@ -563,7 +569,8 @@ class RemoteActionFileSystem extends AbstractFileSystemWithCustomStat implements
    */
   @Override
   public void renameTo(Path sourcePath, Path targetPath) throws IOException {
-    throw new UnsupportedOperationException();
+    // System.out.println("RemoteActionFileSystem.rename: " + sourcePath);
+    writeDelegate.renameTo(sourcePath, targetPath);
   }
 
   /**
@@ -707,15 +714,29 @@ class RemoteActionFileSystem extends AbstractFileSystemWithCustomStat implements
       if (notifyConsumer && artifact != null) {
         metadataConsumer.accept(artifact, metadata);
       }
+      // System.out.println("HasArtifact: " + artifact != null);
       this.metadata = metadata;
       this.remoteMetadata = remoteMetadata;
     }
 
     /** Callers are expected to close the returned stream. */
     public ByteArrayOutputStream getOutputStream(Path path, boolean append) {
+      // System.out.println("OutputMetadata.getOutputStream() " + path);
       ByteArrayOutputStream baos = new ByteArrayOutputStream() {
         @Override
         public void close() throws IOException {
+        // FIXME.
+        // For local execution, FileAction's are simply never flushed to
+        // the file system.
+        // This is the side effect of mutating the local file execution.
+        if (path.isFile()) {
+          try {
+            OutputStream outputStream = new FileOutputStream(path.toString()); 
+            writeTo(outputStream);
+          } catch (Exception e) {
+             System.out.println("close() write failed: " + e);
+          }
+        }
           flushInternal(true);
           super.close();
         }
@@ -725,12 +746,25 @@ class RemoteActionFileSystem extends AbstractFileSystemWithCustomStat implements
           flushInternal(false);
         }
 
+      @Override
+      public void write(byte[] b, int off, int len) {
+        super.write(b, off, len);
+      }
+
+      public void writeTo(OutputStream out) throws IOException {
+        super.writeTo(out);
+          // System.out.println("BAOS.writeTo()" + path);
+      }
+
         private void flushInternal(boolean notify) throws IOException {
           super.flush();
+          // System.out.println("BAOS.flushInternal: " + path);
           byte[] data = toByteArray();
+
           set(new InlineFileArtifactValue(data, writeDelegate.getDigestFunction().getHash().hashBytes(data).asBytes()),
               /*requestMetadata=*/ null,
               /*notifyConsumer=*/ notify);
+
         }
       };
 

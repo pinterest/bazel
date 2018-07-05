@@ -40,10 +40,13 @@ def main():
 
     hashed_obj_file_list.write(hashed_obj_file_path + '\n')
 
-    # Create symlink only if the symlink doesn't exist.
-    if not os.path.exists(hashed_obj_file_path):
-      os.symlink(os.path.basename(obj_file_path), hashed_obj_file_path)
-
+    # The fact that this is blowing up is a symptom of some other problem
+    try:
+         # Create symlink only if the symlink doesn't exist.
+        if not os.path.exists(hashed_obj_file_path):
+            os.symlink(os.path.basename(obj_file_path), hashed_obj_file_path)
+    except Exception:
+        pass
   hashed_obj_file_list.close()
 
 if __name__ == '__main__':

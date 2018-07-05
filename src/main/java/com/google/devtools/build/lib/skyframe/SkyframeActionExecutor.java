@@ -892,7 +892,7 @@ public final class SkyframeActionExecutor {
       throws ActionExecutionException, InterruptedException {
     // ActionFileSystem constructs directories implicitly, so no need to delete the old outputs
     // and ensure directories exist in this case.
-    if (!usesActionFileSystem()) {
+    // if (!usesActionFileSystem()) {
       // Delete the outputs before executing the action, just to ensure that
       // the action really does produce the outputs.
       try {
@@ -901,7 +901,7 @@ public final class SkyframeActionExecutor {
       } catch (IOException e) {
         reportError("failed to delete output files before executing action", e, action, null);
       }
-    }
+    // }
 
     eventHandler.post(new ActionStartedEvent(action, actionStartTime));
     ActionExecutionStatusReporter statusReporter = statusReporterRef.get();
